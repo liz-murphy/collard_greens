@@ -5,7 +5,7 @@ project(relative_slam)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  open_karto
+  karto_scan_matcher 
   roscpp
   sensor_msgs
   srba
@@ -21,7 +21,7 @@ find_package(MRPT REQUIRED base gui graphs graphslam)
 catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES relative_slam
-  CATKIN_DEPENDS open_karto roscpp sensor_msgs srba tf visualization_msgs
+  CATKIN_DEPENDS karto_scan_matcher roscpp sensor_msgs srba tf visualization_msgs
 #  DEPENDS system_lib
 )
 

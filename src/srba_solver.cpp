@@ -62,7 +62,7 @@ int SRBASolver::AddNode(karto::LocalizedRangeScan* pScan)
     true // Also run local optimization?
   );
 
-  ROS_INFO("Added node: %d with self observation %d", new_kf_info.kf_id, list_obs[0].obs.feat_id);
+  ROS_INFO("Added node: %d with self observation %d", (int)new_kf_info.kf_id, (int)list_obs[0].obs.feat_id);
   curr_kf_id_ = new_kf_info.kf_id+1;
   return new_kf_info.kf_id;
 }
@@ -311,7 +311,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
       id++;
 
       node_text.id = id;
-      node_text.text= boost::to_string(itP->first);
+      node_text.text= boost::lexical_cast<std::string>(itP->first);
       node_text.pose.position.x = p.x()+0.15; 
       node_text.pose.position.y = p.y()+0.15; 
       marray.markers.push_back(visualization_msgs::Marker(node_text));

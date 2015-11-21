@@ -2,9 +2,8 @@
 #define KARTO_SRBASOLVER_H
 
 #include <srba/srba.h>
-#include <open_karto/Karto.h>
 #include <visualization_msgs/MarkerArray.h>
-
+#include <OpenKarto/SensorData.h>
 using namespace srba;
 //using namespace mrpt::utils;
 

@@ -10,9 +10,9 @@
 #include "sensor_msgs/LaserScan.h"
 #include "nav_msgs/GetMap.h"
 
-#include "open_karto/ScanMatcher.h"
-#include "open_karto/ScanManager.h"
-#include "open_karto/Karto.h"
+//#include "OpenKarto/ScanMatcher.h"
+//#include "OpenKarto/ScanManager.h"
+#include "OpenKarto/OpenMapper.h"
 #include <relative_slam/srba_solver.h>
 #include <boost/thread.hpp>
 
@@ -70,11 +70,12 @@ class RelativeSlam
     boost::mutex map_to_odom_mutex_;
 
     // Karto bookkeeping
-    karto::ScanManager* scan_manager_;
+    karto::MapperSensorManager* scan_manager_;
     karto::ScanMatcher* sequential_scan_matcher_;
     SRBASolver solver_;
     std::map<std::string, karto::LaserRangeFinder*> lasers_;
     std::map<std::string, bool> lasers_inverted_;
+    karto::Identifier sensor_name_;
 
     // Internal state
     bool got_map_;
@@ -147,8 +148,8 @@ RelativeSlam::RelativeSlam() : got_map_(false),
   transform_thread_ = new boost::thread(boost::bind(&RelativeSlam::publishLoop, this, transform_publish_period));
 
   // Initialize Karto structures
-  scan_manager_ = new karto::ScanManager(scan_buffer_size_, scan_buffer_max_distance_);
-  sequential_scan_matcher_ = karto::ScanMatcher::Create(corr_search_space_dim_, corr_search_space_res_, corr_search_space_smear_dev_, laser_range_threshold_);
+  scan_manager_ = new karto::MapperSensorManager(scan_buffer_size_, scan_buffer_max_distance_);
+  sequential_scan_matcher_ = karto::ScanMatcher::Create(corr_search_space_dim_, corr_search_space_res_, corr_search_space_smear_dev_, laser_range_threshold_, false);
 
   // Use SRBA for graph structures and solving
   //SRBASolver* solver_ = new SRBASolver();
@@ -251,9 +252,9 @@ RelativeSlam::getLaser(const sensor_msgs::LaserScan::ConstPtr& scan)
 
     // Create a laser range finder device and copy in data from the first
     // scan
-    std::string name = scan->header.frame_id;
+    sensor_name_.SetName(karto::String(scan->header.frame_id.c_str()));
     karto::LaserRangeFinder* laser = 
-      karto::LaserRangeFinder::CreateLaserRangeFinder(karto::LaserRangeFinder_Custom, karto::Name(name));
+      karto::LaserRangeFinder::CreateLaserRangeFinder(karto::LaserRangeFinder_Custom, sensor_name_);
     laser->SetOffsetPose(karto::Pose2(laser_pose.getOrigin().x(),
               laser_pose.getOrigin().y(),
               yaw));
@@ -267,8 +268,10 @@ RelativeSlam::getLaser(const sensor_msgs::LaserScan::ConstPtr& scan)
 
     // Store this laser device for later
     lasers_[scan->header.frame_id] = laser;
+
+    // Register with the "Mapper"
+    scan_manager_->RegisterSensor(sensor_name_);
   }
-  ROS_INFO("Exiting getLaser");
   return lasers_[scan->header.frame_id];
 }
 
@@ -306,7 +309,6 @@ void RelativeSlam::publishGraphVisualization()
 
 void RelativeSlam::laserCallback(const sensor_msgs::LaserScan::ConstPtr& scan)
 {
-  ROS_INFO("In laser callback");
   laser_count_++;
   if ((laser_count_ % throttle_scans_) != 0)
     return;
@@ -330,8 +332,6 @@ void RelativeSlam::laserCallback(const sensor_msgs::LaserScan::ConstPtr& scan)
               odom_pose.GetX(),
               odom_pose.GetY(),
               odom_pose.GetHeading());
-
-    publishGraphVisualization();
 
     if(!got_map_ || 
        (scan->header.stamp - last_map_update) > map_update_interval_)
@@ -376,60 +376,65 @@ bool RelativeSlam::hasMovedEnough(karto::LocalizedRangeScan* pScan, karto::Local
 
 bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
 {
-  ROS_INFO("in process");
+
+  karto::LocalizedObject* pLocalizedObject = dynamic_cast<karto::LocalizedObject*>(pScan);
   if (pScan != NULL)
   {
-    //karto::LaserRangeFinder* pLaserRangeFinder = pScan->GetLaserRangeFinder();
-
-    ROS_INFO("Got laser range finder");
+    karto::LaserRangeFinder* pLaserRangeFinder = pScan->GetLaserRangeFinder();
+    
     // validate scan
-    //if (pLaserRangeFinder == NULL || pScan == NULL || pLaserRangeFinder->Validate(pScan) == false)
-    //{
-     // return false;
-    //}
+    if (pLaserRangeFinder == NULL)
+    {
+      return false;
+    }
 
-    ROS_INFO("Getting last scan");
-    // get last scan
-    karto::LocalizedRangeScan* pLastScan = scan_manager_->GetLastScan();
+    pLaserRangeFinder->Validate(pScan);
 
+    // ensures sensor has been registered with mapper--does nothing if the sensor has already been registered
+    scan_manager_->RegisterSensor(pLocalizedObject->GetSensorIdentifier());
+
+    karto::LocalizedRangeScan* pLastScan = dynamic_cast<karto::LocalizedRangeScan *>(scan_manager_->GetLastScan(pLocalizedObject->GetSensorIdentifier()));
+    
     // update scans corrected pose based on last correction
     if (pLastScan != NULL)
     {
       karto::Transform lastTransform(pLastScan->GetOdometricPose(), pLastScan->GetCorrectedPose());
       pScan->SetCorrectedPose(lastTransform.TransformPose(pScan->GetOdometricPose()));
-    }
+      
+      // test if scan is outside minimum boundary or if heading is larger then minimum heading
+      if (!hasMovedEnough(pScan, pLastScan))
+      {
+        return false;
+      }
 
-    // test if scan is outside minimum boundary or if heading is larger then minimum heading
-    if (!hasMovedEnough(pScan, pLastScan))
-    {
-      return false;
-    }
+      karto::Matrix3 covariance;
+      covariance.SetToIdentity();
 
-    ROS_INFO("Has moved enough");
-    karto::Matrix3 covariance;
-    covariance.SetToIdentity();
-    
-    if(pLastScan != NULL)
-    {
       karto::Pose2 bestPose;
       sequential_scan_matcher_->MatchScan(pScan,
-                               scan_manager_->GetRunningScans(),
+                               scan_manager_->GetRunningScans(pScan->GetSensorIdentifier()),
                                            bestPose,
                                            covariance);
       pScan->SetSensorPose(bestPose);
+  
+      ROS_INFO("Best pose is: %f, %f, %f", bestPose.GetX(), bestPose.GetY(), bestPose.GetHeading()); 
+      // Hook called before loop closing 
+      //karto::ScanMatched(pScan); 
     }
-    ROS_INFO("Adding node to graph");
+
+    scan_manager_->AddLocalizedObject(pScan);
+
     int id = solver_.AddNode(pScan);
-    ROS_INFO("Adding scan to scan manager");
-    // add scan to buffer and assign id
+    
     scan_manager_->AddRunningScan(pScan);
-    scan_manager_->AddScan(pScan, id);
-    ROS_INFO("Setting last scan");
+
+    // TO-DO: Loop closing attempts here
     scan_manager_->SetLastScan(pScan);
+
+    //karto::ScanMatchingEnd(pScan);
     return true;
   }
   return false;
-
 }
 
 bool RelativeSlam::updateMap()
@@ -437,11 +442,16 @@ bool RelativeSlam::updateMap()
   boost::mutex::scoped_lock(map_mutex_);
 
   karto::OccupancyGrid* occ_grid = 
-          karto::OccupancyGrid::CreateFromScans(scan_manager_->GetRunningScans(), resolution_);
+          karto::OccupancyGrid::CreateFromScans(scan_manager_->GetRunningScans(sensor_name_), resolution_);
 
   if(!occ_grid)
+  {
+    ROS_INFO("No occupancy grid");
     return false;
+  }
 
+  ROS_INFO("Got occupancy grid");
+  
   if(!got_map_) {
     map_.map.info.resolution = resolution_;
     map_.map.info.origin.position.x = 0.0;
@@ -502,7 +512,7 @@ bool RelativeSlam::updateMap()
   sst_.publish(map_.map);
   sstm_.publish(map_.map.info);
 
-  delete occ_grid;
+  //delete occ_grid;
 
   return true;
 }
@@ -511,7 +521,6 @@ bool RelativeSlam::addScan(karto::LaserRangeFinder* laser,
        const sensor_msgs::LaserScan::ConstPtr& scan, 
                    karto::Pose2& karto_pose)
 {
-  ROS_INFO("In addScan");
   if(!getOdomPose(karto_pose, scan->header.stamp))
      return false;
   
@@ -534,16 +543,14 @@ bool RelativeSlam::addScan(karto::LaserRangeFinder* laser,
     }
   }
   
-  ROS_INFO("Creating localized range scan");
   // create localized range scan
   karto::LocalizedRangeScan* range_scan = 
-    new karto::LocalizedRangeScan(laser->GetName(), readings);
+    new karto::LocalizedRangeScan(scan->header.frame_id.c_str(), readings);
   range_scan->SetOdometricPose(karto_pose);
   range_scan->SetCorrectedPose(karto_pose);
 
   // Add the localized range scan to the mapper
   bool processed;
-  ROS_INFO("Processing");
   if((processed = process(range_scan)))
   {
     //std::cout << "Pose: " << range_scan->GetOdometricPose() << " Corrected Pose: " << range_scan->GetCorrectedPose() << std::endl;
@@ -573,8 +580,8 @@ bool RelativeSlam::addScan(karto::LaserRangeFinder* laser,
     // Add the localized range scan to the dataset (for memory management)
     //dataset_->Add(range_scan);
   }
-  else
-    delete range_scan;
+  //else
+   // delete range_scan;
 
   return processed;
 }
