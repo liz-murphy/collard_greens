@@ -2,6 +2,7 @@
 #define KARTO_SRBASOLVER_H
 
 #include <srba/srba.h>
+#include <srba/srba_types.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <OpenKarto/SensorData.h>
 using namespace srba;
@@ -30,6 +31,82 @@ typedef TRBA_Problem_state<
   RBA_OPTIONS
   > problem_state_t;
 
+struct MY_FEAT_VISITOR
+{
+  bool visit_filter_feat(
+    const TLandmarkID lm_ID,
+    const topo_dist_t cur_dist)
+  {
+    // Return true if it's desired to visit this keyframe node
+  }
+
+  void visit_feat(
+    const TLandmarkID lm_ID,
+    const topo_dist_t cur_dist)
+  {
+    // Process this keyframe node
+  }
+};
+
+struct MY_KF_VISITOR
+{
+  bool visit_filter_kf(
+    const TKeyFrameID kf_ID,
+    const topo_dist_t cur_dist)
+  {
+    // Return true if it's desired to visit this keyframe node
+    return true;
+  }
+
+  void visit_kf(
+    const TKeyFrameID kf_ID,
+    const topo_dist_t cur_dist)
+  {
+    // Process this keyframe node
+  }
+};
+
+struct MY_K2K_EDGE_VISITOR
+{
+  bool visit_filter_k2k(
+    const TKeyFrameID current_kf,
+    const TKeyFrameID next_kf,
+    const srba_t::k2k_edge_t* edge,
+    const topo_dist_t cur_dist)
+  {
+    // Return true if it's desired to visit this keyframe node
+  }
+
+  void visit_k2k(
+    const TKeyFrameID current_kf,
+    const TKeyFrameID next_kf,
+    const srba_t::k2k_edge_t* edge,
+    const topo_dist_t cur_dist)
+  {
+    // Process this keyframe node
+  }
+};
+
+struct MY_K2F_EDGE_VISITOR
+{
+  bool visit_filter_k2f(
+    const TKeyFrameID current_kf,
+    const srba_t::k2f_edge_t* edge,
+    const topo_dist_t cur_dist)
+  {
+    // Return true if it's desired to visit this keyframe node
+  }
+
+  void visit_k2f(
+    const TKeyFrameID current_kf,
+    const srba_t::k2f_edge_t* edge,
+    const topo_dist_t cur_dist)
+  {
+    // Process this keyframe node
+  }
+};
+
+
 class SRBASolver 
 {
 public:
@@ -41,12 +118,17 @@ public:
   //virtual void Compute();
   //virtual const karto::ScanSolver::IdPoseVector& GetCorrections() const;
 
-  int AddNode(karto::LocalizedRangeScan* scan);
+  int AddNode();
+  void AddConstraint(int sourceId, int targetId, const karto::Pose2 &rDiff, const karto::Matrix3& rCovariance);
+
   //virtual void AddConstraint(karto::Edge<karto::LocalizedRangeScan>* pEdge);
   virtual void getGraph(std::vector<float> &g);
   virtual void getActiveIds(std::vector<int> &ids);
 
   void publishGraphVisualization(visualization_msgs::MarkerArray &marray);
+
+  void GetNearLinkedObjects(int kf_id);
+
 protected:
 //  karto::ScanSolver::IdPoseVector corrections_;
   srba_t rba_;

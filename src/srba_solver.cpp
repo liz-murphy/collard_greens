@@ -42,7 +42,7 @@ void SRBASolver::Compute()
 }
 */
 
-int SRBASolver::AddNode(karto::LocalizedRangeScan* pScan)
+int SRBASolver::AddNode()
 {
   ROS_INFO("Adding node: %d", curr_kf_id_);
   srba_t::new_kf_observations_t  list_obs;
@@ -131,7 +131,7 @@ int SRBASolver::AddNode(karto::LocalizedRangeScan* pScan)
   ROS_INFO("Adding edge between %d and %d", curr_kf_id_, pTarget->GetUniqueId());
   ROS_INFO("%f, %f, %f", diff.GetX(), diff.GetY(), diff.GetHeading());
 }*/
-/*void SRBASolver::AddConstraint(karto::Edge<karto::LocalizedRangeScan>* pEdge)
+void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &rDiff, const karto::Matrix3& rCovariance)
 {
   ROS_INFO("Adding constraint");
   // Need to call create_kf2kf_edge here
@@ -140,20 +140,17 @@ int SRBASolver::AddNode(karto::LocalizedRangeScan* pScan)
   obs_field.is_fixed = false;   // "Landmarks" (relative poses) have unknown relative positions (i.e. treat them as unknowns to be estimated)
   obs_field.is_unknown_with_init_val = false; // Ignored, since all observed "fake landmarks" already have an initialized value.
 
-  karto::LocalizedRangeScan* pSource = pEdge->GetSource()->GetObject();
-  karto::LocalizedRangeScan* pTarget = pEdge->GetTarget()->GetObject();
-
   bool reverse_edge = false;
-  if(pSource->GetUniqueId() < pTarget->GetUniqueId())
+  if(sourceId < targetId)
     reverse_edge = true;
 
-  ROS_INFO("Adding constraint from %d to %d", pSource->GetUniqueId(), pTarget->GetUniqueId());
+  ROS_INFO("Adding constraint from %d to %d", sourceId, targetId);
   
-  karto::LinkInfo* pLinkInfo = (karto::LinkInfo*)(pEdge->GetLabel());
+  //karto::LinkInfo* pLinkInfo = (karto::LinkInfo*)(pEdge->GetLabel());
 
-  karto::Pose2 diff = pLinkInfo->GetPoseDifference();
+  //karto::Pose2 diff = pLinkInfo->GetPoseDifference();
 
-  karto::Matrix3 precisionMatrix = pLinkInfo->GetCovariance().Inverse();
+  karto::Matrix3 precisionMatrix = rCovariance.Inverse();
   Eigen::Matrix<double,3,3> m;
   m(0,0) = precisionMatrix(0,0);
   m(0,1) = m(1,0) = precisionMatrix(0,1);
@@ -164,17 +161,17 @@ int SRBASolver::AddNode(karto::LocalizedRangeScan* pScan)
 
   if(reverse_edge)
   {
-    obs_field.obs.feat_id      = pSource->GetUniqueId();  // Is this right??
-    obs_field.obs.obs_data.x   = -diff.GetX();
-    obs_field.obs.obs_data.y   = -diff.GetY();
-    obs_field.obs.obs_data.yaw = -diff.GetHeading();
+    obs_field.obs.feat_id      = sourceId;  // Is this right??
+    obs_field.obs.obs_data.x   = -rDiff.GetX();
+    obs_field.obs.obs_data.y   = -rDiff.GetY();
+    obs_field.obs.obs_data.yaw = -rDiff.GetHeading();
   }
   else
   {
-    obs_field.obs.feat_id      = pTarget->GetUniqueId();  // Is this right??
-    obs_field.obs.obs_data.x   = diff.GetX();
-    obs_field.obs.obs_data.y   = diff.GetY();
-    obs_field.obs.obs_data.yaw = diff.GetHeading();
+    obs_field.obs.feat_id      = targetId;  // Is this right??
+    obs_field.obs.obs_data.x   = rDiff.GetX();
+    obs_field.obs.obs_data.y   = rDiff.GetY();
+    obs_field.obs.obs_data.yaw = rDiff.GetHeading();
   }
 
   list_obs.push_back( obs_field );
@@ -183,22 +180,22 @@ int SRBASolver::AddNode(karto::LocalizedRangeScan* pScan)
 
   if(reverse_edge)
   {
-    rba_.determine_kf2kf_edges_to_create(pTarget->GetUniqueId(),
+    rba_.determine_kf2kf_edges_to_create(targetId,
       list_obs,
       new_edge_ids);
 
-    rba_.add_observation(pTarget->GetUniqueId(), obs_field.obs, NULL, NULL ); 
+    rba_.add_observation(targetId, obs_field.obs, NULL, NULL ); 
   }
   else
   { 
-    rba_.determine_kf2kf_edges_to_create(pSource->GetUniqueId(),
+    rba_.determine_kf2kf_edges_to_create(sourceId,
       list_obs,
       new_edge_ids);
 
-     rba_.add_observation(pSource->GetUniqueId(), obs_field.obs, NULL, NULL ); 
+     rba_.add_observation(sourceId, obs_field.obs, NULL, NULL ); 
   }
 }
-*/
+
 void SRBASolver::getActiveIds(std::vector<int> &ids)
 {
   if(!rba_.get_rba_state().keyframes.empty())
@@ -294,7 +291,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
     if(curr_kf_id_ == 0)
       return;
     TKeyFrameID root_keyframe(curr_kf_id_-1);
-    rba_.create_complete_spanning_tree(root_keyframe,spantree, 30);
+    rba_.create_complete_spanning_tree(root_keyframe,spantree, 100);
 
     int id = 0;
     for (srba_t::frameid2pose_map_t::const_iterator itP = spantree.begin();itP!=spantree.end();++itP)
@@ -434,3 +431,11 @@ void SRBASolver::Clear()
 {
 }
 
+void SRBASolver::GetNearLinkedObjects(int kf_id)
+{
+  MY_FEAT_VISITOR feat;
+  MY_KF_VISITOR vis;
+  MY_K2K_EDGE_VISITOR k2k;
+  MY_K2F_EDGE_VISITOR k2f;
+  rba_.bfs_visitor(kf_id, 100, false, vis, feat, k2k, k2f);
+}

@@ -23,6 +23,51 @@
 // compute linear index for given map coords
 #define MAP_IDX(sx, i, j) ((sx) * (j) + (i))
 
+#define MAX_VARIANCE            500.0
+using namespace karto;
+using namespace srba;
+
+// Also belongs back in karto
+
+
+/*class NearScanVisitor : public Visitor<LocalizedObjectPtr>
+{
+public:
+  NearScanVisitor(LocalizedLaserScan* pScan, kt_double maxDistance, kt_bool useScanBarycenter)
+    : m_MaxDistanceSquared(math::Square(maxDistance))
+    , m_UseScanBarycenter(useScanBarycenter)
+  {
+    m_CenterPose = pScan->GetReferencePose(m_UseScanBarycenter);
+  }
+
+  virtual kt_bool Visit(Vertex<LocalizedObjectPtr>* pVertex)
+  {
+    LocalizedObject* pObject = pVertex->GetVertexObject();
+
+    LocalizedLaserScan* pScan = dynamic_cast<LocalizedLaserScan*>(pObject);
+    
+    // object is not a scan or wasn't scan matched, ignore
+    if (pScan == NULL)
+    {
+      return false;
+    }
+    
+    Pose2 pose = pScan->GetReferencePose(m_UseScanBarycenter);
+
+    kt_double squaredDistance = pose.GetPosition().SquaredDistance(m_CenterPose.GetPosition());
+    return (squaredDistance <= m_MaxDistanceSquared - KT_TOLERANCE);
+  }
+
+protected:
+  Pose2 m_CenterPose;
+  kt_double m_MaxDistanceSquared;
+  kt_bool m_UseScanBarycenter;
+
+}; // NearScanVisitor
+
+*/
+
+
 class RelativeSlam
 {
   public:
@@ -42,10 +87,23 @@ class RelativeSlam
     bool updateMap();
     void publishTransform();
     void publishLoop(double transform_publish_period);
+    void publishVis(double vis_publish_period);
     void publishGraphVisualization();
     bool hasMovedEnough(karto::LocalizedRangeScan* pScan, karto::LocalizedRangeScan* pLastScan) const;
     bool process(karto::LocalizedRangeScan* pScan);
-    // ROS handles
+
+    // These really should be moved back into karto once the graph stuff has been ripped out
+    bool addEdges(karto::LocalizedObject *pObject);
+    void LinkObjects(LocalizedObject* pFromObject, LocalizedObject* pToObject, const Pose2& rMean, const Matrix3& rCovariance);
+    bool AddEdges(LocalizedLaserScan* pScan, const Matrix3& rCovariance);
+    void LinkChainToScan(const LocalizedLaserScanList& rChain, LocalizedLaserScan* pScan, const Pose2& rMean, const Matrix3& rCovariance);
+    void LinkNearChains(LocalizedLaserScan* pScan, Pose2List& rMeans, List<Matrix3>& rCovariances);
+    Pose2 ComputeWeightedMean(const Pose2List& rMeans, const List<Matrix3>& rCovariances) const;
+    LocalizedLaserScan* GetClosestScanToPose(const LocalizedLaserScanList& rScans, const Pose2& rPose) const;
+    List<LocalizedLaserScanList> FindNearChains(LocalizedLaserScan* pScan);
+    LocalizedLaserScanList FindNearLinkedScans(LocalizedLaserScan* pScan, kt_double maxDistance);   
+   
+     // ROS handles
     ros::NodeHandle node_;
     tf::TransformListener tf_;
     tf::TransformBroadcaster* tfB_;
@@ -80,6 +138,7 @@ class RelativeSlam
     // Internal state
     bool got_map_;
     boost::thread* transform_thread_;
+    boost::thread* vis_thread_;
     tf::Transform map_to_odom_;
     bool inverted_laser_;
 
@@ -92,7 +151,12 @@ class RelativeSlam
     double laser_range_threshold_;
     double minimum_travel_heading_;
     double minimum_travel_distance_;
+    double link_match_min_response_fine_; 
+    bool use_scan_barycenter_;
+    int loop_match_min_chain_size_;
+    double link_scan_max_distance_;
     int laser_count_;
+    bool is_multithreaded_;
 };
 
 RelativeSlam::RelativeSlam() : got_map_(false),
@@ -105,6 +169,11 @@ RelativeSlam::RelativeSlam() : got_map_(false),
   laser_range_threshold_(25.0),
   minimum_travel_heading_(0.35),
   minimum_travel_distance_(0.2),
+  link_match_min_response_fine_(0.8),
+  use_scan_barycenter_(true),
+  loop_match_min_chain_size_(10),
+  link_scan_max_distance_(10.0),
+  is_multithreaded_(false),
   laser_count_(0)
 {
   map_to_odom_.setIdentity();
@@ -113,7 +182,7 @@ RelativeSlam::RelativeSlam() : got_map_(false),
   if(!private_nh_.getParam("odom_frame", odom_frame_))
     odom_frame_ = "odom";
   if(!private_nh_.getParam("map_frame", map_frame_))
-    map_frame_ = "map";
+    map_frame_ = "relative_map";
   if(!private_nh_.getParam("base_frame", base_frame_))
     base_frame_ = "base_link";
   if(!private_nh_.getParam("throttle_scans", throttle_scans_))
@@ -131,6 +200,8 @@ RelativeSlam::RelativeSlam() : got_map_(false),
   }
   double transform_publish_period;
   private_nh_.param("transform_publish_period", transform_publish_period, 0.05);
+  double vis_publish_period;
+  private_nh_.param("vis_publish_period", vis_publish_period, 5.0);
 
   // Set up advertisements and subscriptions
   tfB_ = new tf::TransformBroadcaster();
@@ -146,6 +217,7 @@ RelativeSlam::RelativeSlam() : got_map_(false),
   // transform; it needs to go out regularly, uninterrupted by potentially
   // long periods of computation in our main loop.
   transform_thread_ = new boost::thread(boost::bind(&RelativeSlam::publishLoop, this, transform_publish_period));
+  vis_thread_ = new boost::thread(boost::bind(&RelativeSlam::publishVis, this, vis_publish_period));
 
   // Initialize Karto structures
   scan_manager_ = new karto::MapperSensorManager(scan_buffer_size_, scan_buffer_max_distance_);
@@ -192,6 +264,19 @@ void RelativeSlam::publishTransform()
   boost::mutex::scoped_lock(map_to_odom_mutex_);
   ros::Time tf_expiration = ros::Time::now() + ros::Duration(0.05);
   tfB_->sendTransform(tf::StampedTransform (map_to_odom_, ros::Time::now(), map_frame_, odom_frame_));
+}
+
+void RelativeSlam::publishVis(double vis_publish_period)
+{
+  if(vis_publish_period == 0)
+    return;
+
+   ros::Rate r(1.0 / vis_publish_period);
+   while(ros::ok())
+   {
+    publishGraphVisualization();
+    r.sleep();
+   }
 }
 
 karto::LaserRangeFinder*
@@ -410,6 +495,7 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
       karto::Matrix3 covariance;
       covariance.SetToIdentity();
 
+      // Correct scan
       karto::Pose2 bestPose;
       sequential_scan_matcher_->MatchScan(pScan,
                                scan_manager_->GetRunningScans(pScan->GetSensorIdentifier()),
@@ -422,13 +508,19 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
       //karto::ScanMatched(pScan); 
     }
 
+    // Add scan to buffer and assign id
+    int id = solver_.AddNode();
+    pScan->SetUniqueId(id);
     scan_manager_->AddLocalizedObject(pScan);
 
-    int id = solver_.AddNode(pScan);
-    
-    scan_manager_->AddRunningScan(pScan);
-
+    // Add edges
+    if(pLastScan != NULL)
+    {
+      ROS_INFO("Trying to add edge from %d to %d", pScan->GetUniqueId(), pLastScan->GetUniqueId());
+      addEdges(pScan); 
+    }
     // TO-DO: Loop closing attempts here
+    scan_manager_->AddRunningScan(pScan);
     scan_manager_->SetLastScan(pScan);
 
     //karto::ScanMatchingEnd(pScan);
@@ -436,6 +528,235 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
   }
   return false;
 }
+
+bool RelativeSlam::addEdges(karto::LocalizedObject *pObject)
+{
+  // loose "spring"
+  Matrix3 covariance;
+  covariance(0, 0) = MAX_VARIANCE;
+  covariance(1, 1) = MAX_VARIANCE;
+  covariance(2, 2) = MAX_VARIANCE;
+    
+  karto::LocalizedLaserScan* pScan = dynamic_cast<karto::LocalizedLaserScan*>(pObject);
+  if (pScan != NULL)
+  {      
+    AddEdges(pScan, covariance);
+  }
+  else
+  {
+    //MapperSensorManager* pSensorManager = m_pOpenMapper->m_pMapperSensorManager;      
+    const Identifier& rSensorName = pObject->GetSensorIdentifier();
+      
+    LocalizedLaserScan* pLastScan = scan_manager_->GetLastScan(rSensorName);
+    if (pLastScan != NULL)
+    {
+      ROS_INFO("addEdges trying to link %d to %d", pLastScan->GetUniqueId(), pObject->GetUniqueId());
+      LinkObjects(pLastScan, pObject, pObject->GetCorrectedPose(), covariance);
+    }
+  }
+}
+
+void RelativeSlam::LinkObjects(LocalizedObject* pFromObject, LocalizedObject* pToObject, const Pose2& rMean, const Matrix3& rCovariance)
+{
+    ROS_INFO("Link objects called on %d to %d", pFromObject->GetUniqueId(), pToObject->GetUniqueId());
+    //kt_bool isNewEdge = true;
+    //Edge<LocalizedObjectPtr>* pEdge = AddEdge(pFromObject, pToObject, isNewEdge);
+    
+    // only attach link information if the edge is new
+    //if (isNewEdge == true)
+    //{
+
+    // Calculate the difference
+    LocalizedLaserScan* pScan = dynamic_cast<LocalizedLaserScan*>(pFromObject);
+    Pose2 pose1, pose2;
+    if (pScan != NULL)
+    {
+        pose1 = pScan->GetSensorPose();
+    }
+    else
+    {
+        pose1 = pScan->GetCorrectedPose();
+    }
+
+    ROS_INFO("Pose1:  %f, %f, %f", pose1.GetX(), pose1.GetY(), pose1.GetHeading()); 
+    ROS_INFO("rMean:  %f, %f, %f", rMean.GetX(), rMean.GetY(), rMean.GetHeading()); 
+    
+    // Do the update
+    // transform second pose into the coordinate system of the first pose
+    Transform transform(pose1, Pose2());
+    Pose2 poseDiff = transform.TransformPose(rMean);
+
+    // transform covariance into reference of first pose
+    Matrix3 rotationMatrix;
+    rotationMatrix.FromAxisAngle(0, 0, 1, -pose1.GetHeading());
+
+    
+    Matrix3 covariance = rotationMatrix * rCovariance * rotationMatrix.Transpose();
+    ROS_INFO("Adding constraint:  %f, %f, %f", poseDiff.GetX(), poseDiff.GetY(), poseDiff.GetHeading()); 
+    solver_.AddConstraint(pFromObject->GetUniqueId(), pToObject->GetUniqueId(), poseDiff, covariance);
+}
+
+bool RelativeSlam::AddEdges(LocalizedLaserScan* pScan, const Matrix3& rCovariance)
+{
+    const Identifier& rSensorName = pScan->GetSensorIdentifier();
+    
+    Pose2List means;
+    List<Matrix3> covariances;
+    
+    LocalizedLaserScan* pLastScan = scan_manager_->GetLastScan(rSensorName);
+    if (pLastScan == NULL)
+    {
+      // first scan (link to first scan of other robots)
+
+      assert(scan_manager_->GetScans(rSensorName).Size() == 1);
+      
+      List<Identifier> sensorNames = scan_manager_->GetSensorNames();
+      karto_const_forEach(List<Identifier>, &sensorNames)
+      {
+        const Identifier& rCandidateSensorName = *iter;
+        
+        // skip if candidate sensor is the same or other sensor has no scans
+        if ((rCandidateSensorName == rSensorName) || (scan_manager_->GetScans(rCandidateSensorName).IsEmpty()))
+        {
+          continue;
+        }
+        
+        Pose2 bestPose;
+        Matrix3 covariance;
+        kt_double response = sequential_scan_matcher_->MatchScan(pScan, scan_manager_->GetScans(rCandidateSensorName), bestPose, covariance);
+        LinkObjects(scan_manager_->GetScans(rCandidateSensorName)[0], pScan, bestPose, covariance);
+        
+        // only add to means and covariances if response was high "enough"
+        //if (response > m_pOpenMapper->m_pLinkMatchMinimumResponseFine->GetValue())
+        if (response > link_match_min_response_fine_)
+        {
+          means.Add(bestPose);
+          covariances.Add(covariance);
+        }
+      }
+    }
+    else
+    {
+      ROS_INFO("AddEdges calling LinkObjects on %d to %d", pLastScan->GetUniqueId(), pScan->GetUniqueId());
+      // link to previous scan
+      LinkObjects(pLastScan, pScan, pScan->GetSensorPose(), rCovariance);
+
+      // link to running scans
+      Pose2 scanPose = pScan->GetSensorPose();
+      means.Add(scanPose);
+      covariances.Add(rCovariance);
+      LinkChainToScan(scan_manager_->GetRunningScans(rSensorName), pScan, scanPose, rCovariance);
+    }
+    
+    // link to other near chains (chains that include new scan are invalid)
+    LinkNearChains(pScan, means, covariances);
+    
+    if (!means.IsEmpty())
+    {
+      pScan->SetSensorPose(ComputeWeightedMean(means, covariances));
+    }
+}
+
+void RelativeSlam::LinkChainToScan(const LocalizedLaserScanList& rChain, LocalizedLaserScan* pScan,
+                                  const Pose2& rMean, const Matrix3& rCovariance)
+{
+  Pose2 pose = pScan->GetReferencePose(use_scan_barycenter_);
+
+  LocalizedLaserScan* pClosestScan = GetClosestScanToPose(rChain, pose);
+  assert(pClosestScan != NULL);
+
+  Pose2 closestScanPose = pClosestScan->GetReferencePose(use_scan_barycenter_);
+
+  kt_double squaredDistance = pose.GetPosition().SquaredDistance(closestScanPose.GetPosition());
+  if (squaredDistance < math::Square(link_scan_max_distance_) + KT_TOLERANCE)
+  {
+    ROS_INFO("LinkChainToScan calling LinkObjects on %d to %d", pClosestScan->GetUniqueId(), pScan->GetUniqueId());
+    LinkObjects(pClosestScan, pScan, rMean, rCovariance);
+  }
+}
+
+void RelativeSlam::LinkNearChains(LocalizedLaserScan* pScan, Pose2List& rMeans, List<Matrix3>& rCovariances)
+{
+    const List<LocalizedLaserScanList> nearChains = FindNearChains(pScan);
+
+    kt_bool gotTbb = false;
+    if (is_multithreaded_)
+    {
+#ifdef USE_TBB
+      gotTbb = true;
+      kt_bool* pWasChainLinked = new kt_bool[nearChains.Size()];
+
+      Pose2List means;
+      means.Resize(nearChains.Size());
+
+      List<Matrix3> covariances;
+      covariances.Resize(nearChains.Size());
+
+      int grainSize = 100;
+      Parallel_LinkNearChains myTask(m_pOpenMapper, pScan, &nearChains, pWasChainLinked, &means, &covariances,
+        loop_match_min_chain_size_,
+        link_match_min_response_fine_);
+      tbb::parallel_for(tbb::blocked_range<kt_int32s>(0, static_cast<kt_int32s>(nearChains.Size()), grainSize), myTask);
+
+      for (kt_int32u i = 0; i < nearChains.Size(); i++)
+      {
+        if (pWasChainLinked[i] == true)
+        {
+          rMeans.Add(means[i]);
+          rCovariances.Add(covariances[i]);
+          LinkChainToScan(nearChains[i], pScan, means[i], covariances[i]);
+        }
+      }
+
+      delete [] pWasChainLinked;
+#endif
+    }
+
+    if (gotTbb == false)
+    {
+      karto_const_forEach(List<LocalizedLaserScanList>, &nearChains)
+      {
+#ifdef KARTO_DEBUG2
+        std::cout << "Near chain for " << pScan->GetStateId() << ": [ ";
+        karto_const_forEachAs(LocalizedLaserScanList, iter, iter2)
+        {
+          std::cout << (*iter2)->GetStateId() << " ";
+        }
+        std::cout << "]: ";
+#endif
+
+        if (iter->Size() < loop_match_min_chain_size_)
+        {
+#ifdef KARTO_DEBUG2
+          std::cout << iter->Size() << "(< " << loop_match_min_chain_size_ << ") REJECTED" << std::endl;
+#endif
+          continue;
+        }
+
+        Pose2 mean;
+        Matrix3 covariance;
+        // match scan against "near" chain
+        kt_double response = sequential_scan_matcher_->MatchScan(pScan, *iter, mean, covariance, false);
+        if (response > link_match_min_response_fine_ - KT_TOLERANCE)
+        {
+#ifdef KARTO_DEBUG2
+          std::cout << " ACCEPTED" << std::endl;
+#endif
+          rMeans.Add(mean);
+          rCovariances.Add(covariance);
+          LinkChainToScan(*iter, pScan, mean, covariance);
+        }
+        else
+        {
+#ifdef KARTO_DEBUG2
+          std::cout << response << "(< " << link_match_min_response_fine_ << ") REJECTED" << std::endl;
+#endif        
+        }
+      }
+    }
+  }
+
+
 
 bool RelativeSlam::updateMap()
 {
@@ -573,7 +894,7 @@ bool RelativeSlam::addScan(karto::LaserRangeFinder* laser,
 
     map_to_odom_mutex_.lock();
     map_to_odom_ = tf::Transform(tf::Quaternion( odom_to_map.getRotation() ),
-                                 tf::Point(      odom_to_map.getOrigin() ) ).inverse();
+                                 tf::Point(      odom_to_map.getOrigin() ) );
     map_to_odom_mutex_.unlock();
 
 
@@ -598,6 +919,220 @@ bool RelativeSlam::mapCallback(nav_msgs::GetMap::Request  &req,
   else
     return false;
 }
+
+Pose2 RelativeSlam::ComputeWeightedMean(const Pose2List& rMeans, const List<Matrix3>& rCovariances) const
+{
+  assert(rMeans.Size() == rCovariances.Size());
+  
+  // compute sum of inverses and create inverse list
+  List<Matrix3> inverses;
+  inverses.EnsureCapacity(rCovariances.Size());
+  
+  Matrix3 sumOfInverses;
+  karto_const_forEach(List<Matrix3>, &rCovariances)
+  {
+    Matrix3 inverse = iter->Inverse();
+    inverses.Add(inverse);
+    
+    sumOfInverses += inverse;
+  }
+  Matrix3 inverseOfSumOfInverses = sumOfInverses.Inverse();
+  
+  // compute weighted mean
+  Pose2 accumulatedPose;
+  kt_double thetaX = 0.0;
+  kt_double thetaY = 0.0;
+  
+  Pose2List::ConstIterator meansIter = rMeans.GetConstIterator();
+  karto_const_forEach(List<Matrix3>, &inverses)
+  {
+    Pose2 pose = *meansIter;
+    kt_double angle = pose.GetHeading();
+    thetaX += cos(angle);
+    thetaY += sin(angle);
+    
+    Matrix3 weight = inverseOfSumOfInverses * (*iter);
+    accumulatedPose += weight * pose;
+    
+    meansIter++;
+  }
+  
+  thetaX /= rMeans.Size();
+  thetaY /= rMeans.Size();
+  accumulatedPose.SetHeading(atan2(thetaY, thetaX));
+  
+  return accumulatedPose;
+}
+
+List<LocalizedLaserScanList> RelativeSlam::FindNearChains(LocalizedLaserScan* pScan)
+{
+  List<LocalizedLaserScanList> nearChains;
+  
+  Pose2 scanPose = pScan->GetReferencePose(use_scan_barycenter_);
+  
+  // to keep track of which scans have been added to a chain
+  LocalizedLaserScanList processed;
+  
+  const LocalizedLaserScanList nearLinkedScans = FindNearLinkedScans(pScan, link_scan_max_distance_);
+  karto_const_forEach(LocalizedLaserScanList, &nearLinkedScans)
+  {
+    LocalizedLaserScan* pNearScan = *iter;
+    
+    if (pNearScan == pScan)
+    {
+      continue;
+    }
+    
+    // scan has already been processed, skip
+    if (processed.Contains(pNearScan) == true)
+    {
+      continue;
+    }
+    
+#ifdef KARTO_DEBUG2
+    std::cout << "BUILDING CHAIN: Scan " << pScan->GetStateId() << " is near " << pNearScan->GetStateId() << " (< " << link_scan_max_distance_ << ")" << std::endl;
+#endif
+    
+    processed.Add(pNearScan);
+    
+    // build up chain
+    kt_bool isValidChain = true;
+    LocalizedLaserScanList chain;
+
+    LocalizedLaserScanList scans = scan_manager_->GetScans(pNearScan->GetSensorIdentifier());
+    
+    kt_int32s nearScanIndex = scan_manager_->GetScanIndex(pNearScan);
+    assert(nearScanIndex >= 0);
+    
+    // add scans before current scan being processed
+    for (kt_int32s candidateScanIndex = nearScanIndex - 1; candidateScanIndex >= 0; candidateScanIndex--)
+    {
+      LocalizedLaserScan* pCandidateScan = scans[candidateScanIndex];
+      
+      // chain is invalid--contains scan being added
+      if (pCandidateScan == pScan)
+      {
+#ifdef KARTO_DEBUG2
+        std::cout << "INVALID CHAIN: Scan " << pScan->GetStateId() << " is not allowed in chain." << std::endl;
+#endif
+        isValidChain = false;
+      }
+      
+      Pose2 candidatePose = pCandidateScan->GetReferencePose(use_scan_barycenter_);
+      kt_double squaredDistance = scanPose.GetPosition().SquaredDistance(candidatePose.GetPosition());
+      
+      if (squaredDistance < math::Square(link_scan_max_distance_ + KT_TOLERANCE))
+      {
+        chain.Add(pCandidateScan);
+        processed.Add(pCandidateScan);
+        
+#ifdef KARTO_DEBUG2
+        std::cout << "Building chain for " << pScan->GetStateId() << ": [ ";
+        karto_const_forEachAs(LocalizedLaserScanList, &chain, iter2)
+        {
+          std::cout << (*iter2)->GetStateId() << " ";
+        }
+        std::cout << "]" << std::endl;
+#endif          
+      }
+      else
+      {
+        break;
+      }
+    }
+    
+    chain.Add(pNearScan);
+    
+    // add scans after current scan being processed
+    kt_size_t end = scans.Size();
+    for (kt_size_t candidateScanIndex = nearScanIndex + 1; candidateScanIndex < end; candidateScanIndex++)
+    {
+      LocalizedLaserScan* pCandidateScan = scans[candidateScanIndex];
+      
+      if (pCandidateScan == pScan)
+      {
+#ifdef KARTO_DEBUG2
+        std::cout << "INVALID CHAIN: Scan " << pScan->GetStateId() << " is not allowed in chain." << std::endl;
+#endif          
+        isValidChain = false;
+      }
+      
+      Pose2 candidatePose = pCandidateScan->GetReferencePose(use_scan_barycenter_);;
+      kt_double squaredDistance = scanPose.GetPosition().SquaredDistance(candidatePose.GetPosition());
+      
+      if (squaredDistance < math::Square(link_scan_max_distance_) + KT_TOLERANCE)
+      {
+        chain.Add(pCandidateScan);
+        processed.Add(pCandidateScan);
+        
+#ifdef KARTO_DEBUG2
+        std::cout << "Building chain for " << pScan->GetStateId() << ": [ ";
+        karto_const_forEachAs(LocalizedLaserScanList, &chain, iter2)
+        {
+          std::cout << (*iter2)->GetStateId() << " ";
+        }
+        std::cout << "]" << std::endl;
+#endif                    
+      }
+      else
+      {
+        break;
+      }
+    }
+    
+    if (isValidChain)
+    {
+      // add chain to collection
+      nearChains.Add(chain);
+    }
+  }
+  
+  return nearChains;
+}
+
+LocalizedLaserScan* RelativeSlam::GetClosestScanToPose(const LocalizedLaserScanList& rScans, const Pose2& rPose) const
+{
+  LocalizedLaserScan* pClosestScan = NULL;
+  kt_double bestSquaredDistance = DBL_MAX;
+  
+  karto_const_forEach(LocalizedLaserScanList, &rScans)
+  {
+    Pose2 scanPose = (*iter)->GetReferencePose(use_scan_barycenter_);
+    
+    kt_double squaredDistance = rPose.GetPosition().SquaredDistance(scanPose.GetPosition());
+    if (squaredDistance < bestSquaredDistance)
+    {
+      bestSquaredDistance = squaredDistance;
+      pClosestScan = *iter;
+    }
+  }
+  
+  return pClosestScan;
+}
+
+
+LocalizedLaserScanList RelativeSlam::FindNearLinkedScans(LocalizedLaserScan* pScan, kt_double maxDistance)
+{
+  //NearScanVisitor* pVisitor = new NearScanVisitor(pScan, maxDistance, use_scan_barycenter_);
+  //LocalizedObjectList nearLinkedObjects = m_pTraversal->Traverse(GetVertex(pScan), pVisitor);
+  //LocalizedObjectList nearLinkedObjects = solver_.bfs_visitor(pScan->GetUniqueId(), 100, false, pVisitor, NULL, NULL, NULL);
+  LocalizedObjectList nearLinkedObjects; 
+  solver_.GetNearLinkedObjects(pScan->GetUniqueId());
+  
+  LocalizedLaserScanList nearLinkedScans;
+  karto_const_forEach(LocalizedObjectList, &nearLinkedObjects)
+  {
+    LocalizedObject* pObject = *iter;
+    LocalizedLaserScan* pScan = dynamic_cast<LocalizedLaserScan*>(pObject);
+    if (pScan != NULL)
+    {
+      nearLinkedScans.Add(pScan);
+    }
+  }
+  
+  return nearLinkedScans;
+}
+
 
 int main(int argc, char** argv)
 {
