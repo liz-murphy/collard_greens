@@ -5,6 +5,7 @@
 #include <srba/srba_types.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <OpenKarto/SensorData.h>
+#include <ros/ros.h>
 using namespace srba;
 //using namespace mrpt::utils;
 
@@ -50,11 +51,25 @@ struct MY_FEAT_VISITOR
 
 struct MY_KF_VISITOR
 {
+
+  const TKeyFrameID root_kf_;
+  const srba_t::rba_problem_state_t &rba_state_;
+
+  std::vector<int> near_linked_ids_;
+
+  MY_KF_VISITOR(const srba_t::rba_problem_state_t &rba_state, const TKeyFrameID root_kf) : rba_state_(rba_state), root_kf_(root_kf) { }
+
   bool visit_filter_kf(
     const TKeyFrameID kf_ID,
     const topo_dist_t cur_dist)
   {
+
+    
     // Return true if it's desired to visit this keyframe node
+    ROS_ERROR("Adding node %d to visitor list at current distance %d", kf_ID, cur_dist);
+    ROS_ERROR("Root kf is %d", root_kf_);
+    //double x = rba_state_.keyframes[kf_ID].obs_field.obs.obs_data.x;
+    //ROS_ERROR("KF at: ", x);
     return true;
   }
 
@@ -62,8 +77,11 @@ struct MY_KF_VISITOR
     const TKeyFrameID kf_ID,
     const topo_dist_t cur_dist)
   {
+    near_linked_ids_.push_back(kf_ID);
     // Process this keyframe node
   }
+
+
 };
 
 struct MY_K2K_EDGE_VISITOR
@@ -127,7 +145,7 @@ public:
 
   void publishGraphVisualization(visualization_msgs::MarkerArray &marray);
 
-  void GetNearLinkedObjects(int kf_id);
+  std::vector<int> GetNearLinkedObjects(int kf_id, int max_topo_distance);
 
 protected:
 //  karto::ScanSolver::IdPoseVector corrections_;
@@ -136,6 +154,7 @@ protected:
   int curr_kf_id_;
   bool first_keyframe_;
   bool first_edge_;
+  int marker_count_;
 };
 
 #endif // KARTO_SRBA_SOLVER_H

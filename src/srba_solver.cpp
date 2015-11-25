@@ -8,7 +8,7 @@ using mrpt::poses::CPose3D;
 
 SRBASolver::SRBASolver()
 {
-  rba_.setVerbosityLevel( 1 );   // 0: None; 1:Important only; 2:Verbose
+  rba_.setVerbosityLevel( 2 );   // 0: None; 1:Important only; 2:Verbose
   rba_.parameters.srba.use_robust_kernel = false;
   
 // =========== Topology parameters ===========
@@ -19,6 +19,8 @@ SRBASolver::SRBASolver()
 
   first_keyframe_ = true;
   curr_kf_id_ = 0;
+
+  marker_count_ = 0;
 }
 
 SRBASolver::~SRBASolver()
@@ -67,70 +69,6 @@ int SRBASolver::AddNode()
   return new_kf_info.kf_id;
 }
 
-/*void SRBASolver::AddNode(karto::Vertex<karto::LocalizedRangeScan>* pVertex)
-{ 
-  //srba_t::new_kf_observations_t  list_obs;
-  srba_t::new_kf_observation_t obs_field;
-  obs_field.is_fixed = true;
-  ROS_INFO("Adding node with kf_id %d", curr_kf_id_);
-  obs_field.obs.feat_id = curr_kf_id_; // Feature ID == keyframe ID
-  obs_field.obs.obs_data.x = 0;   // Landmark values are actually ignored.
-  obs_field.obs.obs_data.y = 0;
-  obs_field.obs.obs_data.yaw = 0;
-  list_obs_.push_back( obs_field );
-
-  if(first_keyframe_)
-    first_keyframe_ = false;
-  else
-  {
-    // Add the last keyframe
-    srba_t::TNewKeyFrameInfo new_kf_info;
-    ROS_INFO("Adding node with id: %d", curr_kf_id_);
-    rba_.define_new_keyframe(
-    list_obs_,      // Input observations for the new KF
-    new_kf_info,   // Output info
-    true // Also run local optimization?
-    );
-    ROS_ASSERT(cur_kf_id_ == new_kf_info.kf_id);
-  }
-  curr_kf_id_ = pVertex->GetObject()->GetUniqueId();
-  list_obs_.clear();
-
-}*/
-/*void SRBASolver::AddConstraint(karto::Edge<karto::LocalizedRangeScan>* pEdge)
-{
-  // Need to call create_kf2kf_edge here
-  srba_t::new_kf_observations_t  list_obs;
-  srba_t::new_kf_observation_t obs_field;
-  obs_field.is_fixed = false;   // "Landmarks" (relative poses) have unknown relative positions (i.e. treat them as unknowns to be estimated)
-  obs_field.is_unknown_with_init_val = false; // Ignored, since all observed "fake landmarks" already have an initialized value.
-
-  karto::LocalizedRangeScan* pSource = pEdge->GetSource()->GetObject();
-  karto::LocalizedRangeScan* pTarget = pEdge->GetTarget()->GetObject();
-
-  karto::LinkInfo* pLinkInfo = (karto::LinkInfo*)(pEdge->GetLabel());
-
-  karto::Pose2 diff = pLinkInfo->GetPoseDifference();
-
-  karto::Matrix3 precisionMatrix = pLinkInfo->GetCovariance().Inverse();
-  Eigen::Matrix<double,3,3> m;
-  m(0,0) = precisionMatrix(0,0);
-  m(0,1) = m(1,0) = precisionMatrix(0,1);
-  m(0,2) = m(2,0) = precisionMatrix(0,2);
-  m(1,1) = precisionMatrix(1,1);
-  m(1,2) = m(2,1) = precisionMatrix(1,2);
-  m(2,2) = precisionMatrix(2,2);
-
-  obs_field.obs.feat_id      = pTarget->GetUniqueId();  // Is this right??
-  obs_field.obs.obs_data.x   = diff.GetX();
-  obs_field.obs.obs_data.y   = diff.GetY();
-  obs_field.obs.obs_data.yaw = diff.GetHeading();
-
-  list_obs_.push_back( obs_field );
-
-  ROS_INFO("Adding edge between %d and %d", curr_kf_id_, pTarget->GetUniqueId());
-  ROS_INFO("%f, %f, %f", diff.GetX(), diff.GetY(), diff.GetHeading());
-}*/
 void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &rDiff, const karto::Matrix3& rCovariance)
 {
   ROS_INFO("Adding constraint");
@@ -146,10 +84,6 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
 
   ROS_INFO("Adding constraint from %d to %d", sourceId, targetId);
   
-  //karto::LinkInfo* pLinkInfo = (karto::LinkInfo*)(pEdge->GetLabel());
-
-  //karto::Pose2 diff = pLinkInfo->GetPoseDifference();
-
   karto::Matrix3 precisionMatrix = rCovariance.Inverse();
   Eigen::Matrix<double,3,3> m;
   m(0,0) = precisionMatrix(0,0);
@@ -390,35 +324,14 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
 
   } // end for each KF
 
-
-
-
-
-/* 
-    mrpt::gui::CDisplayWindow3D win("RBA results",640,480);
-
-    // Do nothing
-    //     // --------------------------------------------------------------------------------
-    // Show 3D view of the resulting map:
-    // --------------------------------------------------------------------------------
-    srba_t::TOpenGLRepresentationOptions  opengl_options;
-    mrpt::opengl::CSetOfObjectsPtr rba_3d = mrpt::opengl::CSetOfObjects::Create();
-
-    rba_.build_opengl_representation(
-      curr_kf_id_,  // Root KF: the current (latest) KF
-      opengl_options, // Rendering options
-      rba_3d  // Output scene
-      );
-
-    {
-      mrpt::opengl::COpenGLScenePtr &scene = win.get3DSceneAndLock();
-      scene->clear();
-      scene->insert(rba_3d);
-      win.unlockAccess3DScene();
-    }
-    win.repaint();
-  //std::cout << "Press any key to continue.\n";
-  //win.waitForKey();*/
+  // Delete any excess markers whose ids haven't been reclaimed
+  m.action = visualization_msgs::Marker::DELETE;
+  for (; id < marker_count_; id++) 
+  {
+    m.id = id;
+    marray.markers.push_back(visualization_msgs::Marker(m));
+  }
+  marker_count_ = marray.markers.size();
 }
   else
     ROS_INFO("Graph is empty");
@@ -431,11 +344,13 @@ void SRBASolver::Clear()
 {
 }
 
-void SRBASolver::GetNearLinkedObjects(int kf_id)
+std::vector<int> SRBASolver::GetNearLinkedObjects(int kf_id, int max_topo_distance)
 {
+  ROS_INFO("MAX TOPO DISTANCE IS %d", max_topo_distance);
   MY_FEAT_VISITOR feat;
-  MY_KF_VISITOR vis;
+  MY_KF_VISITOR vis(rba_.get_rba_state(), kf_id);
   MY_K2K_EDGE_VISITOR k2k;
   MY_K2F_EDGE_VISITOR k2f;
-  rba_.bfs_visitor(kf_id, 100, false, vis, feat, k2k, k2f);
+  rba_.bfs_visitor(kf_id, max_topo_distance, false, vis, feat, k2k, k2f);
+  return vis.near_linked_ids_;
 }
