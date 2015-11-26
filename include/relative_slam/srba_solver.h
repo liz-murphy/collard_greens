@@ -5,7 +5,9 @@
 #include <srba/srba_types.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <OpenKarto/SensorData.h>
+#include <OpenKarto/Geometry.h>
 #include <ros/ros.h>
+#include <vector>
 using namespace srba;
 //using namespace mrpt::utils;
 
@@ -63,14 +65,6 @@ struct MY_KF_VISITOR
     const TKeyFrameID kf_ID,
     const topo_dist_t cur_dist)
   {
-
-    
-    // Return true if it's desired to visit this keyframe node
-    ROS_ERROR("Adding node %d to visitor list at current distance %d", kf_ID, cur_dist);
-    ROS_ERROR("Root kf is %d", root_kf_);
-    //double x = rba_state_.keyframes[kf_ID].obs_field.obs.obs_data.x;
-    //ROS_ERROR("KF at: ", x);
-    return true;
   }
 
   void visit_kf(
@@ -124,6 +118,7 @@ struct MY_K2F_EDGE_VISITOR
   }
 };
 
+typedef std::vector< std::pair<int, karto::Pose2> > IdPoseVector;
 
 class SRBASolver 
 {
@@ -133,14 +128,13 @@ public:
 
 public:
   virtual void Clear();
-  //virtual void Compute();
-  //virtual const karto::ScanSolver::IdPoseVector& GetCorrections() const;
+  virtual void Compute();
+  virtual const IdPoseVector& GetCorrections() const;
 
   int AddNode();
   void AddConstraint(int sourceId, int targetId, const karto::Pose2 &rDiff, const karto::Matrix3& rCovariance);
 
   //virtual void AddConstraint(karto::Edge<karto::LocalizedRangeScan>* pEdge);
-  virtual void getGraph(std::vector<float> &g);
   virtual void getActiveIds(std::vector<int> &ids);
 
   void publishGraphVisualization(visualization_msgs::MarkerArray &marray);
@@ -155,6 +149,7 @@ protected:
   bool first_keyframe_;
   bool first_edge_;
   int marker_count_;
+  IdPoseVector corrections_;
 };
 
 #endif // KARTO_SRBA_SOLVER_H

@@ -8,7 +8,7 @@ using mrpt::poses::CPose3D;
 
 SRBASolver::SRBASolver()
 {
-  rba_.setVerbosityLevel( 2 );   // 0: None; 1:Important only; 2:Verbose
+  rba_.setVerbosityLevel( 0 );   // 0: None; 1:Important only; 2:Verbose
   rba_.parameters.srba.use_robust_kernel = false;
   
 // =========== Topology parameters ===========
@@ -26,23 +26,23 @@ SRBASolver::SRBASolver()
 SRBASolver::~SRBASolver()
 {
 }
-/*
-const karto::ScanSolver::IdPoseVector& SRBASolver::GetCorrections() const
+
+const IdPoseVector& SRBASolver::GetCorrections() const
 {
-    ROS_ERROR("Corrections called");
     return corrections_;
 }
 
 void SRBASolver::Compute()
 {
-  //corrections.clear();
+  corrections_.clear();
 
+  // Get the global graph and return updated poses?
   //typedef std::vector<sba::Node2d, Eigen::aligned_allocator<sba::Node2d> > NodeVector;
   //ROS_INFO("Calling SRBA compute");
 
   // Do nothing here?
 }
-*/
+
 
 int SRBASolver::AddNode()
 {
@@ -71,7 +71,6 @@ int SRBASolver::AddNode()
 
 void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &rDiff, const karto::Matrix3& rCovariance)
 {
-  ROS_INFO("Adding constraint");
   // Need to call create_kf2kf_edge here
   srba_t::new_kf_observations_t  list_obs;
   srba_t::new_kf_observation_t obs_field;
@@ -82,8 +81,6 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
   if(sourceId < targetId)
     reverse_edge = true;
 
-  ROS_INFO("Adding constraint from %d to %d", sourceId, targetId);
-  
   karto::Matrix3 precisionMatrix = rCovariance.Inverse();
   Eigen::Matrix<double,3,3> m;
   m(0,0) = precisionMatrix(0,0);
@@ -336,17 +333,14 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
   else
     ROS_INFO("Graph is empty");
 }
-void SRBASolver::getGraph(std::vector<float> &g)
-{
-}
 
 void SRBASolver::Clear()
 {
+  corrections_.clear();
 }
 
 std::vector<int> SRBASolver::GetNearLinkedObjects(int kf_id, int max_topo_distance)
 {
-  ROS_INFO("MAX TOPO DISTANCE IS %d", max_topo_distance);
   MY_FEAT_VISITOR feat;
   MY_KF_VISITOR vis(rba_.get_rba_state(), kf_id);
   MY_K2K_EDGE_VISITOR k2k;
