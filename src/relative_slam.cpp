@@ -674,7 +674,6 @@ bool RelativeSlam::AddEdges(LocalizedLaserScanPtr pScan, const Matrix3& rCovaria
     }
     else
     {
-      ROS_INFO("AddEdges calling LinkObjects on %d to %d", pLastScan->GetUniqueId(), pScan->GetUniqueId());
       // link to previous scan
       LinkObjects(pLastScan, pScan, pScan->GetSensorPose(), rCovariance);
 
@@ -1192,7 +1191,6 @@ LocalizedLaserScanList RelativeSlam::FindNearLinkedScans(LocalizedLaserScanPtr p
 
 kt_bool RelativeSlam::TryCloseLoop(LocalizedLaserScanPtr pScan, const Identifier& rSensorName)
   {
-    ROS_INFO("TRY CLOSE LOOP CALLED");
     kt_bool loopClosed = false;
     
     kt_int32u scanIndex = 0;
