@@ -22,7 +22,7 @@ catkin_package(
   INCLUDE_DIRS include
 #  LIBRARIES relative_slam
   CATKIN_DEPENDS karto_scan_matcher roscpp sensor_msgs srba tf visualization_msgs
-#  DEPENDS system_lib
+  DEPENDS MRPT 
 )
 
 ###########

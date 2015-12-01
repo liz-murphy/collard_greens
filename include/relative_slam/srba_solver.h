@@ -150,6 +150,7 @@ protected:
   bool first_edge_;
   int marker_count_;
   IdPoseVector corrections_;
+  std::string relative_map_frame_;
 };
 
 #endif // KARTO_SRBA_SOLVER_H

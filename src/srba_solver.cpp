@@ -21,6 +21,8 @@ SRBASolver::SRBASolver()
   curr_kf_id_ = 0;
 
   marker_count_ = 0;
+
+  relative_map_frame_ = "relative_map";
 }
 
 SRBASolver::~SRBASolver()
@@ -36,6 +38,29 @@ void SRBASolver::Compute()
 {
   corrections_.clear();
 
+  if(!rba_.get_rba_state().keyframes.empty())
+  {
+    // Use a spanning tree to estimate the global pose of every node
+    //  starting (root) at the given keyframe:
+   
+    corrections_.resize(rba_.get_rba_state().keyframes.size());
+    srba_t::frameid2pose_map_t  spantree;
+    if(curr_kf_id_ == 0)
+      return;
+    TKeyFrameID root_keyframe(0);
+    rba_.create_complete_spanning_tree(root_keyframe,spantree);
+
+    for (srba_t::frameid2pose_map_t::const_iterator itP = spantree.begin();itP!=spantree.end();++itP)
+    {
+      std::pair<int, karto::Pose2> id_pose;
+      id_pose.first = itP->first;
+      const CPose3D p = itP->second.pose;
+      karto::Pose2 pos(p.x(), p.y(), p.yaw());
+      id_pose.second = pos;
+      corrections_.push_back(id_pose);
+    }
+  }
+   
   // Get the global graph and return updated poses?
   //typedef std::vector<sba::Node2d, Eigen::aligned_allocator<sba::Node2d> > NodeVector;
   //ROS_INFO("Calling SRBA compute");
@@ -151,7 +176,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
   ROS_INFO("Visualizing");
   // Vertices are round, red spheres
   visualization_msgs::Marker m;
-  m.header.frame_id = "/relative_map";
+  m.header.frame_id = relative_map_frame_;
   m.header.stamp = ros::Time::now();
   m.id = 0;
   m.ns = "karto";
@@ -170,7 +195,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
 
   // Odometry edges are opaque blue line strips 
   visualization_msgs::Marker edge;
-  edge.header.frame_id = "/relative_map";
+  edge.header.frame_id = relative_map_frame_;
   edge.header.stamp = ros::Time::now();
   edge.action = visualization_msgs::Marker::ADD;
   edge.ns = "karto";
@@ -186,7 +211,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
 
   // Loop edges are purple, opacity depends on backend state
   visualization_msgs::Marker loop_edge;
-  loop_edge.header.frame_id = "/relative_map";
+  loop_edge.header.frame_id = relative_map_frame_;
   loop_edge.header.stamp = ros::Time::now();
   loop_edge.action = visualization_msgs::Marker::ADD;
   loop_edge.ns = "spanning_tree";
@@ -201,7 +226,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
   loop_edge.color.b = 1.0;
  
   visualization_msgs::Marker node_text;
-  node_text.header.frame_id = "/relative_map";
+  node_text.header.frame_id = relative_map_frame_;
   node_text.header.stamp = ros::Time::now();
   node_text.action = visualization_msgs::Marker::ADD;
   node_text.ns = "karto";
@@ -221,8 +246,8 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
     srba_t::frameid2pose_map_t  spantree;
     if(curr_kf_id_ == 0)
       return;
-    TKeyFrameID root_keyframe(curr_kf_id_-1);
-    rba_.create_complete_spanning_tree(root_keyframe,spantree, 100);
+    TKeyFrameID root_keyframe(curr_kf_id_ -1 );
+    rba_.create_complete_spanning_tree(root_keyframe,spantree);
 
     int id = 0;
     for (srba_t::frameid2pose_map_t::const_iterator itP = spantree.begin();itP!=spantree.end();++itP)
