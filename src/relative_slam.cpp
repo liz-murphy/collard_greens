@@ -106,6 +106,7 @@ class RelativeSlam
     LocalizedLaserScanList FindNearLinkedScans(LocalizedLaserScanPtr pScan, kt_double maxDistance);   
     //kt_bool TryCloseLoop(LocalizedLaserScanPtr pScan, const Identifier& rSensorName);
     void TryCloseLoop();
+    void TryCloseLoopThread();
     std::list<LocalizedLaserScanPtr> FindPossibleLoopClosure(LocalizedLaserScanPtr pScan, const Identifier& rSensorName, kt_int32u& rStartScanIndex);
     void CorrectPoses();
 
@@ -448,6 +449,7 @@ void RelativeSlam::publishGraphVisualization()
   visualization_msgs::MarkerArray marray;
   solver_.publishGraphVisualization(marray); 
   marker_publisher_.publish(marray);
+  solver_.publishGlobalGraph();
 }
 
 void RelativeSlam::laserCallback(const sensor_msgs::LaserScan::ConstPtr& scan)
@@ -586,7 +588,7 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
       //List<Identifier> sensorNames = scan_manager_->GetSensorNames();
       //karto_const_forEach(List<Identifier>, &sensorNames)
       //{
-        //TryCloseLoop(pScan, *iter);
+      TryCloseLoop();
       //} 
     }
     else
@@ -663,18 +665,10 @@ void RelativeSlam::LinkObjects(LocalizedObject* pFromObject, LocalizedObject* pT
     // transform covariance into reference of first pose
     Matrix3 rotationMatrix;
     rotationMatrix.FromAxisAngle(0, 0, 1, -pose1.GetHeading());
-
     
     Matrix3 covariance = rotationMatrix * rCovariance * rotationMatrix.Transpose();
     ROS_INFO("Adding constraint:  %f, %f, %f", poseDiff.GetX(), poseDiff.GetY(), poseDiff.GetHeading()); 
-    /*if(abs(pFromObject->GetUniqueId() - pToObject->GetUniqueId()) != 1)
-    {
-      Pose2 newPoseDiff;
-      poseDiff = newPoseDiff; //set to zero
-      ROS_ERROR("IGNORING ADDING CONSTRAINT");
-    }
-    else*/
-      solver_.AddConstraint(pFromObject->GetUniqueId(), pToObject->GetUniqueId(), poseDiff, covariance);
+    solver_.AddConstraint(pFromObject->GetUniqueId(), pToObject->GetUniqueId(), poseDiff, covariance);
 }
 
 bool RelativeSlam::AddEdges(LocalizedLaserScanPtr pScan, const Matrix3& rCovariance)
@@ -885,10 +879,8 @@ bool RelativeSlam::updateMap()
      map_.map.info.origin.position.x != offset.GetX() ||
      map_.map.info.origin.position.y != offset.GetY())
   {
-    //map_.map.info.origin.position.x = 0;
-    map_.map.info.origin.position.x = -offset.GetX();
-    map_.map.info.origin.position.y = -offset.GetY();
-    map_.map.info.origin.position.y = 0;
+    map_.map.info.origin.position.x = offset.GetX(); 
+    map_.map.info.origin.position.y = offset.GetY();
     map_.map.info.width = width;
     map_.map.info.height = height;
     map_.map.data.resize(map_.map.info.width * map_.map.info.height);
@@ -921,7 +913,7 @@ bool RelativeSlam::updateMap()
   
   // Set the header information on the map
   map_.map.header.stamp = ros::Time::now();
-  map_.map.header.frame_id = relative_map_frame_;
+  map_.map.header.frame_id = odom_frame_;
 
   sst_.publish(map_.map);
   sstm_.publish(map_.map.info);
@@ -1256,8 +1248,106 @@ LocalizedLaserScanList RelativeSlam::FindNearLinkedScans(LocalizedLaserScanPtr p
   return nearLinkedScans;
 }
 
-//kt_bool RelativeSlam::TryCloseLoop(LocalizedLaserScanPtr pScan, const Identifier& rSensorName)
 void RelativeSlam::TryCloseLoop()
+  {
+
+      LocalizedLaserScanPtr pScan = loop_closure_candidate_;
+
+      if(pScan == NULL)
+        return;
+
+      sensor_name_ = pScan->GetSensorIdentifier();
+      kt_bool loopClosed = false;
+      
+      kt_int32u scanIndex = 0;
+      
+      std::list<LocalizedLaserScanPtr> candidateChainTemp = FindPossibleLoopClosure(pScan, sensor_name_, scanIndex);
+
+      while (!candidateChainTemp.empty())
+      {
+        // Nasty, but for now TODO FIX THIS
+        LocalizedLaserScanList candidateChain;
+        std::cout << "Candidate chain for " << pScan->GetStateId() << ": [ ";
+        for( std::list<LocalizedLaserScanPtr>::iterator iter = candidateChainTemp.begin();iter != candidateChainTemp.end(); ++iter)
+        {
+          std::cout << (*iter)->GetStateId() << " ";
+          candidateChain.Add(*iter);
+        }
+        std::cout << "]" << std::endl;
+          
+        Pose2 bestPose;
+        Matrix3 covariance;
+        ROS_INFO("Computing coarse response");
+        kt_double coarseResponse = loop_scan_matcher_->MatchScan(pScan, candidateChain, bestPose, covariance, false, false);
+        ROS_INFO("Done");
+        
+        StringBuilder message;
+        ROS_INFO_STREAM("COARSE RESPONSE: " << coarseResponse << " (> " << loop_match_min_response_coarse_ << ")");
+        ROS_INFO_STREAM("            var: " << covariance(0, 0) << ",  " << covariance(1, 1) << " (< " << loop_match_max_variance_coarse_ << ")");
+        
+        // This is just messaging 
+        //MapperEventArguments eventArguments(message.ToString());
+        //m_pOpenMapper->Message.Notify(this, eventArguments);
+        
+        if ( ( (coarseResponse > loop_match_min_response_coarse_) &&
+             (covariance(0, 0) < loop_match_max_variance_coarse_) &&
+             (covariance(1, 1) < loop_match_max_variance_coarse_ ))
+            ||
+            // be more lenient if the variance is really small
+            ((coarseResponse > 0.9 * loop_match_min_response_coarse_ ) &&
+             (covariance(0, 0) < 0.01 * loop_match_max_variance_coarse_) &&
+             (covariance(1, 1) < 0.01 * loop_match_max_variance_coarse_)))
+        {
+          // save for reversion
+          Pose2 oldPose = pScan->GetSensorPose();
+          
+          pScan->SetSensorPose(bestPose);
+          boost::mutex::scoped_lock lock(scan_matcher_mutex_);
+          kt_double fineResponse = sequential_scan_matcher_->MatchScan(pScan, candidateChain, bestPose, covariance, false);
+         
+          std::cout << "  BEST POSE = " << bestPose << "  VARIANCE = " << covariance(0, 0) << ", " << covariance(1, 1) << std::endl;
+
+          //message.Clear();
+          ROS_INFO_STREAM("FINE RESPONSE: " << fineResponse << " (>" << loop_match_min_response_fine_ << ")");
+          //MapperEventArguments eventArguments(message.ToString());
+          //m_pOpenMapper->Message.Notify(this, eventArguments);
+          
+          if (fineResponse < loop_match_min_response_fine_)
+          {
+            // failed verification test, revert
+            pScan->SetSensorPose(oldPose);
+            
+            //MapperEventArguments eventArguments("REJECTED!");
+            //m_pOpenMapper->Message.Notify(this, eventArguments);
+            ROS_INFO_STREAM("Rejected");
+          }
+          else
+          {
+            //MapperEventArguments eventArguments1("Closing loop...");
+            //m_pOpenMapper->PreLoopClosed.Notify(this, eventArguments1);
+            ROS_INFO_STREAM("Closing loop..."); 
+            pScan->SetSensorPose(bestPose);
+            LinkChainToScan(candidateChain, pScan, bestPose, covariance);
+            CorrectPoses();
+
+            solver_.setLoopClosed();
+            //MapperEventArguments eventArguments2("Loop closed!");
+            //m_pOpenMapper->PostLoopClosed.Notify(this, eventArguments2);
+            
+            //m_pOpenMapper->ScansUpdated.Notify(this, karto::EventArguments::Empty());      
+            ROS_INFO_STREAM("Loop closed!");
+            loopClosed = true;
+            solver_.publishGlobalGraph();
+          }
+        }
+        
+        candidateChainTemp = FindPossibleLoopClosure(pScan, sensor_name_, scanIndex);
+      }
+  }
+
+
+//kt_bool RelativeSlam::TryCloseLoop(LocalizedLaserScanPtr pScan, const Identifier& rSensorName)
+void RelativeSlam::TryCloseLoopThread()
   {
     ros::Rate r(10);
 

@@ -8,6 +8,8 @@
 #include <OpenKarto/Geometry.h>
 #include <ros/ros.h>
 #include <vector>
+#include <mrpt/graphslam.h>
+#include <mrpt/opengl/graph_tools.h>
 using namespace srba;
 //using namespace mrpt::utils;
 
@@ -138,7 +140,8 @@ public:
   virtual void getActiveIds(std::vector<int> &ids);
 
   void publishGraphVisualization(visualization_msgs::MarkerArray &marray);
-
+  void publishGlobalGraph();
+  void setLoopClosed(){loop_closed_ = true;};
   std::vector<int> GetNearLinkedObjects(int kf_id, int max_topo_distance);
 
 protected:
@@ -151,6 +154,7 @@ protected:
   int marker_count_;
   IdPoseVector corrections_;
   std::string relative_map_frame_;
+  bool loop_closed_;
 };
 
 #endif // KARTO_SRBA_SOLVER_H

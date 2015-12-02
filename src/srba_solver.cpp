@@ -15,7 +15,7 @@ SRBASolver::SRBASolver()
   rba_.parameters.srba.max_tree_depth       = 3;
   rba_.parameters.srba.max_optimize_depth   = 3;
   //rba_.parameters.ecp.submap_size          = 5;
-  rba_.parameters.ecp.min_obs_to_loop_closure = 1;
+  rba_.parameters.ecp.min_obs_to_loop_closure = 4; // This is a VERY IMPORTANT PARAM, if it is set to 1 everything goes to shit
 
   first_keyframe_ = true;
   curr_kf_id_ = 0;
@@ -23,6 +23,7 @@ SRBASolver::SRBASolver()
   marker_count_ = 0;
 
   relative_map_frame_ = "relative_map";
+  loop_closed_ = false;
 }
 
 SRBASolver::~SRBASolver()
@@ -104,7 +105,12 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
 
   bool reverse_edge = false;
   if(sourceId < targetId)
+  {
+    ROS_ERROR("REVERSE EDGE");
     reverse_edge = true;
+  }
+  else
+    ROS_ERROR("$$$$$$$$$$$$$$$$NOT REVERSE EDGE");
 
   karto::Matrix3 precisionMatrix = rCovariance.Inverse();
   Eigen::Matrix<double,3,3> m;
@@ -115,41 +121,42 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
   m(1,2) = m(2,1) = precisionMatrix(1,2);
   m(2,2) = precisionMatrix(2,2);
 
-  if(reverse_edge)
-  {
+//  if(reverse_edge)
+//  {
     obs_field.obs.feat_id      = sourceId;  // Is this right??
     obs_field.obs.obs_data.x   = -rDiff.GetX();
     obs_field.obs.obs_data.y   = -rDiff.GetY();
     obs_field.obs.obs_data.yaw = -rDiff.GetHeading();
-  }
-  else
-  {
+//  }
+//  else
+/*  {
     obs_field.obs.feat_id      = targetId;  // Is this right??
     obs_field.obs.obs_data.x   = rDiff.GetX();
     obs_field.obs.obs_data.y   = rDiff.GetY();
     obs_field.obs.obs_data.yaw = rDiff.GetHeading();
-  }
+  }*/
 
   list_obs.push_back( obs_field );
 
   std::vector<srba::TNewEdgeInfo> new_edge_ids;
 
-  if(reverse_edge)
-  {
+  //if(reverse_edge)
+ // {
+    rba_.add_observation(targetId, obs_field.obs, NULL, NULL ); 
     rba_.determine_kf2kf_edges_to_create(targetId,
       list_obs,
       new_edge_ids);
 
-    rba_.add_observation(targetId, obs_field.obs, NULL, NULL ); 
-  }
-  else
+    ROS_INFO("Created new edge from source: %d to target %d (%f, %f, %f)", sourceId, targetId, -rDiff.GetX(), -rDiff.GetY(), -rDiff.GetHeading());
+  //}
+ /* else
   { 
     rba_.determine_kf2kf_edges_to_create(sourceId,
       list_obs,
       new_edge_ids);
 
      rba_.add_observation(sourceId, obs_field.obs, NULL, NULL ); 
-  }
+  }*/
 }
 
 void SRBASolver::getActiveIds(std::vector<int> &ids)
@@ -168,6 +175,44 @@ void SRBASolver::getActiveIds(std::vector<int> &ids)
     {
       ids.push_back(itP->first);
     }
+  }
+}
+
+void SRBASolver::publishGlobalGraph()
+{
+  if(! (rba_.get_rba_state().keyframes.size() < 5))
+  {
+    mrpt::graphs::CNetworkOfPoses3D poseGraph;
+  rba_.get_global_graphslam_problem(poseGraph);
+
+  // Run optimization:
+  mrpt::graphslam::TResultInfoSpaLevMarq out_info;
+  mrpt::utils::TParametersDouble extra_params;
+  if(loop_closed_)
+  {
+  mrpt::graphslam::optimize_graph_spa_levmarq(
+    poseGraph, 
+    out_info,
+    NULL, /* in_nodes_to_optimize, NULL=all */
+    extra_params
+    );
+  loop_closed_ = false;
+  }
+  mrpt::gui::CDisplayWindow3D win2("Global optimized map",640,480);
+  {
+    mrpt::opengl::COpenGLScenePtr &scene = win2.get3DSceneAndLock();
+    
+    mrpt::utils::TParametersDouble render_params;   // See docs for mrpt::opengl::graph_tools::graph_visualize()
+    render_params["show_ID_labels"] = 1;    
+    
+    // Get opengl representation of the graph:
+    mrpt::opengl::CSetOfObjectsPtr gl_global_map = mrpt::opengl::graph_tools::graph_visualize( poseGraph,render_params );
+    scene->insert(gl_global_map);
+    
+    win2.unlockAccess3DScene();
+    win2.repaint();
+    win2.waitForKey();
+  }
   }
 }
 
