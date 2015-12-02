@@ -37,6 +37,7 @@ const IdPoseVector& SRBASolver::GetCorrections() const
 
 void SRBASolver::Compute()
 {
+  ROS_INFO("Computing corrected poses");
   corrections_.clear();
 
   if(!rba_.get_rba_state().keyframes.empty())
@@ -44,7 +45,7 @@ void SRBASolver::Compute()
     // Use a spanning tree to estimate the global pose of every node
     //  starting (root) at the given keyframe:
    
-    corrections_.resize(rba_.get_rba_state().keyframes.size());
+    //corrections_.resize(rba_.get_rba_state().keyframes.size());
     srba_t::frameid2pose_map_t  spantree;
     if(curr_kf_id_ == 0)
       return;

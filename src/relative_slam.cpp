@@ -182,6 +182,7 @@ class RelativeSlam
     LocalizedLaserScanPtr loop_closure_candidate_;
     boost::shared_ptr<boost::thread> loop_closure_thread_;
 
+    bool loop_closed_;
     // cosmetic
     bool got_initial_pose_;
     karto::Pose2 initial_pose_;
@@ -210,7 +211,8 @@ RelativeSlam::RelativeSlam() : got_map_(false),
   loop_search_space_res_(0.05),
   loop_search_space_smear_dev_(0.03),
   loop_search_max_distance_(4.0),
-  laser_count_(0)
+  laser_count_(0),
+  loop_closed_(false)
 {
   global_map_to_relative_map_.setIdentity();
   global_map_to_odom_.setIdentity();
@@ -449,7 +451,7 @@ void RelativeSlam::publishGraphVisualization()
   visualization_msgs::MarkerArray marray;
   solver_.publishGraphVisualization(marray); 
   marker_publisher_.publish(marray);
-  solver_.publishGlobalGraph();
+  //solver_.publishGlobalGraph();
 }
 
 void RelativeSlam::laserCallback(const sensor_msgs::LaserScan::ConstPtr& scan)
@@ -545,8 +547,9 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
     // update scans corrected pose based on last correction
     if (pLastScan != NULL)
     {
+      std::cout << "Last scan odometric: " << pLastScan->GetOdometricPose() << " Last scan corrected: " << pLastScan->GetCorrectedPose() << "\n";
       karto::Transform lastTransform(pLastScan->GetOdometricPose(), pLastScan->GetCorrectedPose());
-      pScan->SetCorrectedPose(lastTransform.TransformPose(pScan->GetOdometricPose()));
+      pScan->SetCorrectedPose(lastTransform.TransformPose(pLocalizedObject->GetOdometricPose()));
       
       // test if scan is outside minimum boundary or if heading is larger then minimum heading
       if (!hasMovedEnough(pScan, pLastScan))
@@ -571,9 +574,16 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
     }
 
     // Add scan to buffer and assign id
+    //
+    if(loop_closed_)
+    {
+      CorrectPoses();
+      //solver_.setLoopClosed();
+      loop_closed_ = false;
+    }
     int id = solver_.AddNode();
     pScan->SetUniqueId(id);
-    scan_manager_->AddLocalizedObject(pScan);
+    scan_manager_->AddLocalizedObject(pLocalizedObject);
     
     // Add edges
     if(pLastScan != NULL)
@@ -1328,16 +1338,17 @@ void RelativeSlam::TryCloseLoop()
             ROS_INFO_STREAM("Closing loop..."); 
             pScan->SetSensorPose(bestPose);
             LinkChainToScan(candidateChain, pScan, bestPose, covariance);
+            loop_closed_ = true;
+          
             CorrectPoses();
-
-            solver_.setLoopClosed();
+            // solver_.setLoopClosed();
             //MapperEventArguments eventArguments2("Loop closed!");
             //m_pOpenMapper->PostLoopClosed.Notify(this, eventArguments2);
             
             //m_pOpenMapper->ScansUpdated.Notify(this, karto::EventArguments::Empty());      
             ROS_INFO_STREAM("Loop closed!");
             loopClosed = true;
-            solver_.publishGlobalGraph();
+            //solver_.publishGlobalGraph();
           }
         }
         
@@ -1506,6 +1517,7 @@ void RelativeSlam::TryCloseLoopThread()
       solver_.Compute();
      
       IdPoseVector vec = solver_.GetCorrections(); 
+      ROS_INFO("Got %d corrections", vec.size());
       for(int i=0; i < vec.size(); i++)
       {
         boost::mutex::scoped_lock(scan_manager_mutex_);
