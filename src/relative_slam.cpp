@@ -212,7 +212,8 @@ RelativeSlam::RelativeSlam() : got_map_(false),
   loop_search_space_smear_dev_(0.03),
   loop_search_max_distance_(4.0),
   laser_count_(0),
-  loop_closed_(false)
+  loop_closed_(false),
+  got_initial_pose_(false)
 {
   global_map_to_relative_map_.setIdentity();
   global_map_to_odom_.setIdentity();
@@ -431,7 +432,7 @@ RelativeSlam::getOdomPose(karto::Pose2& karto_pose, const ros::Time& t)
 
   karto_pose = karto::Pose2(odom_pose.getOrigin().x(),
                        odom_pose.getOrigin().y(),
-                       yaw);
+                       yaw) - initial_pose_;
 
   double x = karto_pose.GetX();
   double y = karto_pose.GetY();
@@ -480,6 +481,7 @@ void RelativeSlam::laserCallback(const sensor_msgs::LaserScan::ConstPtr& scan)
               odom_pose.GetY(),
               odom_pose.GetHeading());
 
+    //CorrectPoses();
     if(!got_map_ || 
        (scan->header.stamp - last_map_update) > map_update_interval_)
     {
@@ -575,12 +577,12 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
 
     // Add scan to buffer and assign id
     //
-    if(loop_closed_)
+    /*if(loop_closed_)
     {
       CorrectPoses();
       //solver_.setLoopClosed();
       loop_closed_ = false;
-    }
+    }*/
     int id = solver_.AddNode();
     pScan->SetUniqueId(id);
     scan_manager_->AddLocalizedObject(pLocalizedObject);
@@ -598,7 +600,7 @@ bool RelativeSlam::process(karto::LocalizedRangeScan* pScan)
       //List<Identifier> sensorNames = scan_manager_->GetSensorNames();
       //karto_const_forEach(List<Identifier>, &sensorNames)
       //{
-      TryCloseLoop();
+      //TryCloseLoop();
       //} 
     }
     else
@@ -857,7 +859,7 @@ bool RelativeSlam::updateMap()
 
   boost::mutex::scoped_lock(scan_manager_mutex_);
   karto::OccupancyGrid* occ_grid = 
-          karto::OccupancyGrid::CreateFromScans(scan_manager_->GetRunningScans(sensor_name_), resolution_);
+          karto::OccupancyGrid::CreateFromScans(scan_manager_->GetScans(sensor_name_), resolution_);
 
   if(!occ_grid)
   {
@@ -923,7 +925,7 @@ bool RelativeSlam::updateMap()
   
   // Set the header information on the map
   map_.map.header.stamp = ros::Time::now();
-  map_.map.header.frame_id = odom_frame_;
+  map_.map.header.frame_id = global_map_frame_;
 
   sst_.publish(map_.map);
   sstm_.publish(map_.map.info);
@@ -1340,7 +1342,7 @@ void RelativeSlam::TryCloseLoop()
             LinkChainToScan(candidateChain, pScan, bestPose, covariance);
             loop_closed_ = true;
           
-            CorrectPoses();
+            //CorrectPoses();
             // solver_.setLoopClosed();
             //MapperEventArguments eventArguments2("Loop closed!");
             //m_pOpenMapper->PostLoopClosed.Notify(this, eventArguments2);
@@ -1514,7 +1516,7 @@ void RelativeSlam::TryCloseLoopThread()
   void RelativeSlam::CorrectPoses()
   {
     // optimize scans!
-      solver_.Compute();
+      //solver_.Compute();
      
       IdPoseVector vec = solver_.GetCorrections(); 
       ROS_INFO("Got %d corrections", vec.size());

@@ -2,13 +2,17 @@
 #include <ros/ros.h>
 #include <mrpt/gui.h>  // For rendering results as a 3D scene
 #include <string>
+#include <tf/transform_datatypes.h>
 
 using namespace srba;
 using mrpt::poses::CPose3D;
 
+const double STD_NOISE_XY = 0.02;
+const double STD_NOISE_YAW = 0.01;
+
 SRBASolver::SRBASolver()
 {
-  rba_.setVerbosityLevel( 0 );   // 0: None; 1:Important only; 2:Verbose
+  rba_.setVerbosityLevel( 2 );   // 0: None; 1:Important only; 2:Verbose
   rba_.parameters.srba.use_robust_kernel = false;
   
 // =========== Topology parameters ===========
@@ -23,15 +27,53 @@ SRBASolver::SRBASolver()
   marker_count_ = 0;
 
   relative_map_frame_ = "relative_map";
+  global_map_frame_ = "global_map";
   loop_closed_ = false;
+
+  // Information matrix for relative pose observations:
+  {
+    Eigen::Matrix3d ObsL;
+  ObsL.setZero();
+  ObsL(0,0) = 1/(STD_NOISE_XY*STD_NOISE_XY); // x
+  ObsL(1,1) = 1/(STD_NOISE_XY*STD_NOISE_XY); // y
+  ObsL(2,2) = 1/(STD_NOISE_YAW*STD_NOISE_YAW); // phi
+  // Set:
+  rba_.parameters.obs_noise.lambda = ObsL;
+  }
 }
 
 SRBASolver::~SRBASolver()
 {
 }
 
-const IdPoseVector& SRBASolver::GetCorrections() const
+IdPoseVector& SRBASolver::GetCorrections() 
 {
+  ROS_INFO("Computing corrected poses");
+  corrections_.clear();
+
+  if(!rba_.get_rba_state().keyframes.empty())
+  {
+    // Use a spanning tree to estimate the global pose of every node
+    //  starting (root) at the given keyframe:
+   
+    //corrections_.resize(rba_.get_rba_state().keyframes.size());
+    srba_t::frameid2pose_map_t  spantree;
+    if(curr_kf_id_ == 0)
+      return corrections_;
+    TKeyFrameID root_keyframe(0);
+    rba_.create_complete_spanning_tree(root_keyframe,spantree);
+
+    for (srba_t::frameid2pose_map_t::const_iterator itP = spantree.begin();itP!=spantree.end();++itP)
+    {
+      std::pair<int, karto::Pose2> id_pose;
+      id_pose.first = itP->first;
+      const CPose3D p = itP->second.pose;
+      karto::Pose2 pos(p.x(), p.y(), p.yaw());
+      id_pose.second = pos;
+      corrections_.push_back(id_pose);
+    }
+  }
+ 
     return corrections_;
 }
 
@@ -102,7 +144,7 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
   srba_t::new_kf_observations_t  list_obs;
   srba_t::new_kf_observation_t obs_field;
   obs_field.is_fixed = false;   // "Landmarks" (relative poses) have unknown relative positions (i.e. treat them as unknowns to be estimated)
-  obs_field.is_unknown_with_init_val = false; // Ignored, since all observed "fake landmarks" already have an initialized value.
+  obs_field.is_unknown_with_init_val = true; // Ignored, since all observed "fake landmarks" already have an initialized value.
 
   bool reverse_edge = false;
   if(sourceId < targetId)
@@ -226,7 +268,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
   m.header.stamp = ros::Time::now();
   m.id = 0;
   m.ns = "karto";
-  m.type = visualization_msgs::Marker::SPHERE;
+  m.type = visualization_msgs::Marker::ARROW;
   m.pose.position.x = 0.0;
   m.pose.position.y = 0.0;
   m.pose.position.z = 0.0;
@@ -306,6 +348,9 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
       m.id = id;
       m.pose.position.x = p.x();
       m.pose.position.y = p.y();
+      geometry_msgs::Quaternion q = tf::createQuaternionMsgFromYaw(p.yaw());
+
+      m.pose.orientation = q;
       marray.markers.push_back(visualization_msgs::Marker(m));
       id++;
 

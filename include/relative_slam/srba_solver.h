@@ -131,7 +131,7 @@ public:
 public:
   virtual void Clear();
   virtual void Compute();
-  virtual const IdPoseVector& GetCorrections() const;
+  virtual IdPoseVector& GetCorrections();
 
   int AddNode();
   void AddConstraint(int sourceId, int targetId, const karto::Pose2 &rDiff, const karto::Matrix3& rCovariance);
@@ -154,6 +154,7 @@ protected:
   int marker_count_;
   IdPoseVector corrections_;
   std::string relative_map_frame_;
+  std::string global_map_frame_;
   bool loop_closed_;
 };
 
