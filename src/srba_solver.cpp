@@ -5,21 +5,23 @@
 #include <tf/transform_datatypes.h>
 
 using namespace srba;
-using mrpt::poses::CPose3D;
+using mrpt::poses::CPose2D;
 
-const double STD_NOISE_XY = 0.02;
-const double STD_NOISE_YAW = 0.01;
+const double STD_NOISE_XY = 0.001;
+const double STD_NOISE_YAW = 0.005;
 
 SRBASolver::SRBASolver()
 {
   rba_.setVerbosityLevel( 2 );   // 0: None; 1:Important only; 2:Verbose
-  rba_.parameters.srba.use_robust_kernel = false;
   
 // =========== Topology parameters ===========
   rba_.parameters.srba.max_tree_depth       = 3;
   rba_.parameters.srba.max_optimize_depth   = 3;
-  //rba_.parameters.ecp.submap_size          = 5;
-  rba_.parameters.ecp.min_obs_to_loop_closure = 4; // This is a VERY IMPORTANT PARAM, if it is set to 1 everything goes to shit
+  rba_.parameters.ecp.min_obs_to_loop_closure = 1; // This is a VERY IMPORTANT PARAM, if it is set to 1 everything goes to shit
+
+  rba_.parameters.srba.use_robust_kernel = false;
+  rba_.parameters.srba.optimize_new_edges_alone = true;
+  rba_.parameters.srba.dumpToConsole();
 
   first_keyframe_ = true;
   curr_kf_id_ = 0;
@@ -48,7 +50,7 @@ SRBASolver::~SRBASolver()
 
 IdPoseVector& SRBASolver::GetCorrections() 
 {
-  ROS_INFO("Computing corrected poses");
+  ROS_INFO("Computing corrected poses up to %d", curr_kf_id_-1);
   corrections_.clear();
 
   if(!rba_.get_rba_state().keyframes.empty())
@@ -67,8 +69,8 @@ IdPoseVector& SRBASolver::GetCorrections()
     {
       std::pair<int, karto::Pose2> id_pose;
       id_pose.first = itP->first;
-      const CPose3D p = itP->second.pose;
-      karto::Pose2 pos(p.x(), p.y(), p.yaw());
+      const CPose2D p = itP->second.pose;
+      karto::Pose2 pos(p.x(), p.y(), p.phi());
       id_pose.second = pos;
       corrections_.push_back(id_pose);
     }
@@ -98,8 +100,8 @@ void SRBASolver::Compute()
     {
       std::pair<int, karto::Pose2> id_pose;
       id_pose.first = itP->first;
-      const CPose3D p = itP->second.pose;
-      karto::Pose2 pos(p.x(), p.y(), p.yaw());
+      const CPose2D p = itP->second.pose;
+      karto::Pose2 pos(p.x(), p.y(), p.phi());
       id_pose.second = pos;
       corrections_.push_back(id_pose);
     }
@@ -113,16 +115,16 @@ void SRBASolver::Compute()
 }
 
 
-int SRBASolver::AddNode()
+int SRBASolver::AddNode(const karto::Pose2 &pose)
 {
   ROS_INFO("Adding node: %d", curr_kf_id_);
   srba_t::new_kf_observations_t  list_obs;
   srba_t::new_kf_observation_t obs_field;
-  obs_field.is_fixed = true;
+  obs_field.is_fixed = false;
   obs_field.obs.feat_id = curr_kf_id_;// Feature ID == keyframe ID
-  obs_field.obs.obs_data.x = 0;   // Landmark values are actually ignored.
-  obs_field.obs.obs_data.y = 0;
-  obs_field.obs.obs_data.yaw = 0;
+  obs_field.obs.obs_data.x = 0;//pose.GetX();   // Landmark values are actually ignored.
+  obs_field.obs.obs_data.y = 0;//pose.GetY();
+  obs_field.obs.obs_data.yaw = 0;//pose.GetHeading();
   list_obs.push_back( obs_field );
   
   // Add the last keyframe
@@ -144,7 +146,7 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
   srba_t::new_kf_observations_t  list_obs;
   srba_t::new_kf_observation_t obs_field;
   obs_field.is_fixed = false;   // "Landmarks" (relative poses) have unknown relative positions (i.e. treat them as unknowns to be estimated)
-  obs_field.is_unknown_with_init_val = true; // Ignored, since all observed "fake landmarks" already have an initialized value.
+  obs_field.is_unknown_with_init_val = false; // Ignored, since all observed "fake landmarks" already have an initialized value.
 
   bool reverse_edge = false;
   if(sourceId < targetId)
@@ -166,10 +168,12 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
 
 //  if(reverse_edge)
 //  {
+    CPose2D pose(rDiff.GetX(), rDiff.GetY(), rDiff.GetHeading());
+    pose.inverse();
     obs_field.obs.feat_id      = sourceId;  // Is this right??
-    obs_field.obs.obs_data.x   = -rDiff.GetX();
-    obs_field.obs.obs_data.y   = -rDiff.GetY();
-    obs_field.obs.obs_data.yaw = -rDiff.GetHeading();
+    obs_field.obs.obs_data.x   = pose.x();
+    obs_field.obs.obs_data.y   = pose.y();
+    obs_field.obs.obs_data.yaw = pose.phi();
 //  }
 //  else
 /*  {
@@ -186,9 +190,9 @@ void SRBASolver::AddConstraint(int sourceId, int targetId, const karto::Pose2 &r
   //if(reverse_edge)
  // {
     rba_.add_observation(targetId, obs_field.obs, NULL, NULL ); 
-    rba_.determine_kf2kf_edges_to_create(targetId,
-      list_obs,
-      new_edge_ids);
+//    rba_.determine_kf2kf_edges_to_create(targetId,
+ //     list_obs,
+  //    new_edge_ids);
 
     ROS_INFO("Created new edge from source: %d to target %d (%f, %f, %f)", sourceId, targetId, -rDiff.GetX(), -rDiff.GetY(), -rDiff.GetHeading());
   //}
@@ -342,13 +346,13 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
     {
       if (root_keyframe==itP->first) continue;
 
-      const CPose3D p = itP->second.pose;
+      const CPose2D p = itP->second.pose;
       
       // Add the vertex to the marker array 
       m.id = id;
       m.pose.position.x = p.x();
       m.pose.position.y = p.y();
-      geometry_msgs::Quaternion q = tf::createQuaternionMsgFromYaw(p.yaw());
+      geometry_msgs::Quaternion q = tf::createQuaternionMsgFromYaw(p.phi());
 
       m.pose.orientation = q;
       marray.markers.push_back(visualization_msgs::Marker(m));
@@ -366,7 +370,7 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
     for (srba_t::rba_problem_state_t::k2k_edges_deque_t::const_iterator itEdge = rba_.get_rba_state().k2k_edges.begin();
         itEdge!=rba_.get_rba_state().k2k_edges.end();++itEdge)
     {
-      CPose3D p1, p2;
+      CPose2D p1, p2;
       if(itEdge->from != root_keyframe)
       {
         srba_t::frameid2pose_map_t::const_iterator itN1 = spantree.find(itEdge->from);
@@ -418,8 +422,8 @@ void SRBASolver::publishGraphVisualization(visualization_msgs::MarkerArray &marr
         const srba_t::pose_flag_t & other_pf = other_it->second;
 
         // Add edge between the two KFs to represent the pose constraint:
-        mrpt::poses::CPose3D p1 = mrpt::poses::CPose3D(pf.pose);  // Convert to 3D
-        mrpt::poses::CPose3D p2 = mrpt::poses::CPose3D(other_pf.pose);
+        mrpt::poses::CPose2D p1 = mrpt::poses::CPose2D(pf.pose);  // Convert to 3D
+        mrpt::poses::CPose2D p2 = mrpt::poses::CPose2D(other_pf.pose);
 
         geometry_msgs::Point pt1, pt2;
         pt1.x = p1.x();

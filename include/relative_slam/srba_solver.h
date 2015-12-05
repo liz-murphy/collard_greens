@@ -17,9 +17,9 @@ struct RBA_OPTIONS : public srba::RBA_OPTIONS_DEFAULT
 {
   //typedef ecps::local_areas_fixed_size            edge_creation_policy_t;  //!< One of the most important choices: how to construct the relative coordinates graph problem
   typedef ecps::classic_linear_rba edge_creation_policy_t;  //!< One of the most important choices: how to construct the relative coordinates graph problem
-  //  typedef options::sensor_pose_on_robot_none      sensor_pose_on_robot_t;  //!< The sensor pose coincides with the robot pose
+  typedef options::sensor_pose_on_robot_none      sensor_pose_on_robot_t;  //!< The sensor pose coincides with the robot pose
   typedef options::observation_noise_constant_matrix<observations::RelativePoses_2D>   obs_noise_matrix_t;      // The sensor noise matrix is the same for all observations and equal to some given matrix
-  //  typedef options::solver_LM_schur_dense_cholesky solver_t;                //!< Solver algorithm (Default: Lev-Marq, with Schur, with dense Cholesky)
+   typedef options::solver_LM_schur_dense_cholesky solver_t;                //!< Solver algorithm (Default: Lev-Marq, with Schur, with dense Cholesky)
 };
 
 typedef RbaEngine<
@@ -133,7 +133,7 @@ public:
   virtual void Compute();
   virtual IdPoseVector& GetCorrections();
 
-  int AddNode();
+  int AddNode(const karto::Pose2 &pose);
   void AddConstraint(int sourceId, int targetId, const karto::Pose2 &rDiff, const karto::Matrix3& rCovariance);
 
   //virtual void AddConstraint(karto::Edge<karto::LocalizedRangeScan>* pEdge);
