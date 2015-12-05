@@ -1441,7 +1441,17 @@ void RelativeSlam::TryCloseLoopThread()
       for(int i=0; i < vec.size(); i++)
       {
         boost::mutex::scoped_lock(scan_manager_mutex_);
-        LocalizedObject* pObject = scan_manager_->GetLocalizedObject(vec[i].first);
+        LocalizedObject* pObject;
+        try
+        {
+          pObject = scan_manager_->GetLocalizedObject(vec[i].first);
+        }
+        catch (karto::Exception e)
+        {
+          ROS_ERROR("Tried to grab a non-existant object %d", vec[i].first);
+          continue;
+        }
+
         LocalizedLaserScanPtr pScan = dynamic_cast<LocalizedLaserScan*>(pObject);
         
         if (pScan != NULL)
