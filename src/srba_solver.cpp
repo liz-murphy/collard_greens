@@ -15,8 +15,8 @@ SRBASolver::SRBASolver()
   rba_.setVerbosityLevel( 2 );   // 0: None; 1:Important only; 2:Verbose
   
 // =========== Topology parameters ===========
-  rba_.parameters.srba.max_tree_depth       = 5;
-  rba_.parameters.srba.max_optimize_depth   = 5; 
+  rba_.parameters.srba.max_tree_depth       = 3;
+  rba_.parameters.srba.max_optimize_depth   = 3; 
   rba_.parameters.ecp.min_obs_to_loop_closure = 1; // This is a VERY IMPORTANT PARAM, if it is set to 1 everything goes to shit
 
   rba_.parameters.srba.use_robust_kernel = false;
